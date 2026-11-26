@@ -1,0 +1,6 @@
+{
+  "name": "Obsidian Contract",
+  "description": "A third-person 3D city stealth-action assassin game featuring voiced NPCs, a deep-voiced regenerating assassin, and visible bone-flesh-skin-clothing limb reformation.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
