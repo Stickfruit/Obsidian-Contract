@@ -513,6 +513,86 @@ export const VOICE_CATALOG: Record<string, VoiceLineDef> = {
     style: 'Very deep, focused male assassin baritone completing a side contract',
     text: 'Encrypted drive recovered. Side contract complete.',
   },
+  marshal_threat: {
+    id: 'marshal_threat',
+    speaker: 'Federal Air Marshal',
+    role: 'guard',
+    voiceName: 'Charon',
+    style: 'Stern, urgent federal air marshal shouting at gunpoint inside a commercial cabin',
+    text: 'Hands up, freeze right there! We matched your face on manifest—do not move a muscle!',
+  },
+  bail_companion_thanks: {
+    id: 'bail_companion_thanks',
+    speaker: 'Bailed Street Ally',
+    role: 'civilian',
+    voiceName: 'Puck',
+    style: 'Grateful, loyal street fighter thankful after being bailed out of police custody',
+    text: 'You paid my bail? I owe you big time. Stick close—I have your back!',
+  },
+  police_cell_lock: {
+    id: 'police_cell_lock',
+    speaker: 'Precinct Sergeant',
+    role: 'guard',
+    voiceName: 'Charon',
+    style: 'Authoritative, matter-of-fact police desk sergeant locking a holding cell',
+    text: 'One star warrant. Stay in the holding cell until you pay precinct bail.',
+  },
+  prison_intake: {
+    id: 'prison_intake',
+    speaker: 'Warden Briggs',
+    role: 'guard',
+    voiceName: 'Charon',
+    style: 'Cold, strict maximum-security prison warden welcoming a multi-star inmate',
+    text: 'Multiple stars. No bail allowed here—welcome to Blackrock Penitentiary.',
+  },
+  prison_escape: {
+    id: 'prison_escape',
+    speaker: 'Vesper (Assassin)',
+    role: 'assassin',
+    voiceName: 'Fenrir',
+    style: 'Very deep, quiet, victorious male assassin baritone slipping into the night',
+    text: 'Tunnel cleared. Back into the city.',
+  },
+  airport_ticket: {
+    id: 'airport_ticket',
+    speaker: 'Gate Agent',
+    role: 'civilian',
+    voiceName: 'Zephyr',
+    style: 'Polite airport departure desk attendant confirming boarding pass',
+    text: 'Boarding pass confirmed. Head out to the east tarmac stairs to board.',
+  },
+  plane_breach: {
+    id: 'plane_breach',
+    speaker: 'Federal Air Marshal',
+    role: 'guard',
+    voiceName: 'Puck',
+    style: 'Terrified, frantic shout as a bullet pierces the pressurized aircraft fuselage',
+    text: 'NO! That round pierced the fuselage—she is going to blow!',
+  },
+  ocean_dump_line: {
+    id: 'ocean_dump_line',
+    speaker: 'Vesper (Assassin)',
+    role: 'assassin',
+    voiceName: 'Fenrir',
+    style: 'Very deep, calm male assassin baritone disposing of evidence into ocean waves',
+    text: 'The tide will erase every trace.',
+  },
+  shop_buy_thanks: {
+    id: 'shop_buy_thanks',
+    speaker: '24H SuperMart Cashier',
+    role: 'civilian',
+    voiceName: 'Kore',
+    style: 'Warm, cheerful late-night supermarket cashier',
+    text: 'Purchase confirmed! Enjoy your night, and thank you for shopping at 24H SuperMart.',
+  },
+  mission_complete_voice: {
+    id: 'mission_complete_voice',
+    speaker: 'Vesper (Assassin)',
+    role: 'assassin',
+    voiceName: 'Fenrir',
+    style: 'Very deep, calm male assassin baritone confirming side contract transfer',
+    text: 'Side contract complete. Offshore funds cleared.',
+  },
 };
 
 interface ActiveSpatialVoice {
@@ -555,6 +635,10 @@ export class SoundAndVoiceEngine {
   private activeAssassinSource: AudioBufferSourceNode | null = null;
   private activeNpcVoices: ActiveSpatialVoice[] = [];
   private language: LanguageCode = 'en';
+  private supermarketMusicActive = false;
+  private supermarketGain: GainNode | null = null;
+  private supermarketTimer: number | null = null;
+  private supermarketStep = 0;
 
   constructor(
     onCaption?: (caption: VoiceCaption) => void,
@@ -922,7 +1006,24 @@ export class SoundAndVoiceEngine {
           ? 'Guarded, tense syndicate boss speaking'
           : 'Gritty street security talking';
 
-    const buf = await this.synthesizeRawTts(text, voiceName, style);
+    const cacheKey = `dyn:${voiceName}:${text.trim()}`;
+    const cached = this.audioBufferCache.get(cacheKey);
+    if (cached) {
+      this.playVoiceBuffer(cached, role, opts?.npcId, distance, opts?.pan ?? 0);
+      return;
+    }
+
+    const ttsPromise = this.synthesizeRawTts(text, voiceName, style).then(
+      (buf) => {
+        if (buf) this.audioBufferCache.set(cacheKey, buf);
+        return buf;
+      },
+    );
+
+    const fastTimeout = new Promise<null>((resolve) =>
+      window.setTimeout(() => resolve(null), 850),
+    );
+    const buf = await Promise.race([ttsPromise, fastTimeout]);
     if (buf) {
       this.playVoiceBuffer(buf, role, opts?.npcId, distance, opts?.pan ?? 0);
     } else {
@@ -1910,7 +2011,359 @@ export class SoundAndVoiceEngine {
     }
   }
 
+  public playElevatorRideHum(durationSec = 1.1) {
+    const ctx = this.ensureContext();
+    if (!ctx || !this.masterGain || this.muted) return;
+    const now = ctx.currentTime;
+    const osc = ctx.createOscillator();
+    const g = ctx.createGain();
+    osc.type = 'triangle';
+    osc.frequency.setValueAtTime(64, now);
+    osc.frequency.linearRampToValueAtTime(92, now + durationSec * 0.45);
+    osc.frequency.linearRampToValueAtTime(60, now + durationSec);
+    g.gain.setValueAtTime(0.01, now);
+    g.gain.linearRampToValueAtTime(0.09, now + 0.15);
+    g.gain.exponentialRampToValueAtTime(0.001, now + durationSec);
+    osc.connect(g);
+    g.connect(this.masterGain);
+    osc.start(now);
+    osc.stop(now + durationSec + 0.03);
+  }
+
+  public playCellBarsSlam() {
+    const ctx = this.ensureContext();
+    if (!ctx || !this.masterGain || this.muted) return;
+    const now = ctx.currentTime;
+    for (const [off, f1, f2] of [
+      [0, 310, 140],
+      [0.08, 620, 420],
+    ]) {
+      const osc = ctx.createOscillator();
+      const g = ctx.createGain();
+      osc.type = 'square';
+      osc.frequency.setValueAtTime(f1, now + off);
+      osc.frequency.exponentialRampToValueAtTime(f2, now + off + 0.22);
+      g.gain.setValueAtTime(0.22, now + off);
+      g.gain.exponentialRampToValueAtTime(0.001, now + off + 0.26);
+      osc.connect(g);
+      g.connect(this.masterGain);
+      osc.start(now + off);
+      osc.stop(now + off + 0.28);
+    }
+  }
+
+  public playPlaneExplosion() {
+    const ctx = this.ensureContext();
+    if (!ctx || !this.masterGain || this.muted) return;
+    const now = ctx.currentTime;
+    const len = Math.floor(ctx.sampleRate * 1.8);
+    const buf = ctx.createBuffer(1, len, ctx.sampleRate);
+    const d = buf.getChannelData(0);
+    for (let i = 0; i < len; i++) {
+      d[i] = (Math.random() * 2 - 1) * Math.exp(-i / (ctx.sampleRate * 0.55));
+    }
+    const src = ctx.createBufferSource();
+    src.buffer = buf;
+    const lp = ctx.createBiquadFilter();
+    lp.type = 'lowpass';
+    lp.frequency.setValueAtTime(750, now);
+    lp.frequency.exponentialRampToValueAtTime(95, now + 1.6);
+    const g = ctx.createGain();
+    g.gain.setValueAtTime(0.65, now);
+    g.gain.exponentialRampToValueAtTime(0.001, now + 1.75);
+    src.connect(lp);
+    lp.connect(g);
+    g.connect(this.masterGain);
+    src.start(now);
+
+    const sub = ctx.createOscillator();
+    const sg = ctx.createGain();
+    sub.type = 'sawtooth';
+    sub.frequency.setValueAtTime(110, now);
+    sub.frequency.exponentialRampToValueAtTime(28, now + 1.1);
+    sg.gain.setValueAtTime(0.45, now);
+    sg.gain.exponentialRampToValueAtTime(0.001, now + 1.2);
+    sub.connect(sg);
+    sg.connect(this.masterGain);
+    sub.start(now);
+    sub.stop(now + 1.25);
+  }
+
+  public playWaterSplash() {
+    const ctx = this.ensureContext();
+    if (!ctx || !this.masterGain || this.muted) return;
+    const now = ctx.currentTime;
+    const len = Math.floor(ctx.sampleRate * 0.85);
+    const buf = ctx.createBuffer(1, len, ctx.sampleRate);
+    const d = buf.getChannelData(0);
+    for (let i = 0; i < len; i++) {
+      d[i] = (Math.random() * 2 - 1) * Math.exp(-i / (ctx.sampleRate * 0.28));
+    }
+    const src = ctx.createBufferSource();
+    src.buffer = buf;
+    const bp = ctx.createBiquadFilter();
+    bp.type = 'bandpass';
+    bp.frequency.setValueAtTime(880, now);
+    bp.frequency.exponentialRampToValueAtTime(280, now + 0.8);
+    bp.Q.value = 1.2;
+    const g = ctx.createGain();
+    g.gain.setValueAtTime(0.32, now);
+    g.gain.exponentialRampToValueAtTime(0.001, now + 0.84);
+    src.connect(bp);
+    bp.connect(g);
+    g.connect(this.masterGain);
+    src.start(now);
+  }
+
+  public playJetFlyover() {
+    const ctx = this.ensureContext();
+    if (!ctx || !this.masterGain || this.muted) return;
+    const now = ctx.currentTime;
+    const len = Math.floor(ctx.sampleRate * 1.4);
+    const buf = ctx.createBuffer(1, len, ctx.sampleRate);
+    const d = buf.getChannelData(0);
+    for (let i = 0; i < len; i++) {
+      const env = Math.sin((i / len) * Math.PI);
+      d[i] = (Math.random() * 2 - 1) * env;
+    }
+    const src = ctx.createBufferSource();
+    src.buffer = buf;
+    const bp = ctx.createBiquadFilter();
+    bp.type = 'bandpass';
+    bp.frequency.setValueAtTime(260, now);
+    bp.frequency.exponentialRampToValueAtTime(1120, now + 0.6);
+    bp.frequency.exponentialRampToValueAtTime(220, now + 1.35);
+    const g = ctx.createGain();
+    g.gain.setValueAtTime(0.28, now);
+    g.gain.exponentialRampToValueAtTime(0.001, now + 1.38);
+    src.connect(bp);
+    bp.connect(g);
+    g.connect(this.masterGain);
+    src.start(now);
+  }
+
+  public playWeightClang() {
+    const ctx = this.ensureContext();
+    if (!ctx || !this.masterGain || this.muted) return;
+    const now = ctx.currentTime;
+    for (const [off, freq] of [
+      [0, 520],
+      [0.06, 780],
+    ]) {
+      const osc = ctx.createOscillator();
+      const g = ctx.createGain();
+      osc.type = 'triangle';
+      osc.frequency.setValueAtTime(freq, now + off);
+      g.gain.setValueAtTime(0.18, now + off);
+      g.gain.exponentialRampToValueAtTime(0.001, now + off + 0.3);
+      osc.connect(g);
+      g.connect(this.masterGain);
+      osc.start(now + off);
+      osc.stop(now + off + 0.32);
+    }
+  }
+
+  public playPrisonBuzzer() {
+    const ctx = this.ensureContext();
+    if (!ctx || !this.masterGain || this.muted) return;
+    const now = ctx.currentTime;
+    const osc = ctx.createOscillator();
+    const g = ctx.createGain();
+    osc.type = 'sawtooth';
+    osc.frequency.setValueAtTime(145, now);
+    g.gain.setValueAtTime(0.16, now);
+    g.gain.exponentialRampToValueAtTime(0.001, now + 0.55);
+    osc.connect(g);
+    g.connect(this.masterGain);
+    osc.start(now);
+    osc.stop(now + 0.58);
+  }
+
+  public setSupermarketMusic(active: boolean) {
+    if (this.supermarketMusicActive === active) return;
+    this.supermarketMusicActive = active;
+
+    if (active) {
+      const ctx = this.ensureContext();
+      if (!ctx || !this.masterGain) return;
+      if (!this.supermarketGain) {
+        this.supermarketGain = ctx.createGain();
+        this.supermarketGain.gain.value = 0.001;
+        this.supermarketGain.connect(this.masterGain);
+      }
+      this.supermarketGain.gain.cancelScheduledValues(ctx.currentTime);
+      this.supermarketGain.gain.setTargetAtTime(0.24, ctx.currentTime, 0.35);
+
+      if (this.supermarketTimer === null) {
+        this.playSupermarketBar();
+        this.supermarketTimer = window.setInterval(() => {
+          this.playSupermarketBar();
+        }, 560);
+      }
+    } else {
+      if (this.supermarketGain && this.ctx) {
+        this.supermarketGain.gain.cancelScheduledValues(this.ctx.currentTime);
+        this.supermarketGain.gain.setTargetAtTime(0.0001, this.ctx.currentTime, 0.25);
+      }
+      if (this.supermarketTimer !== null) {
+        clearInterval(this.supermarketTimer);
+        this.supermarketTimer = null;
+      }
+    }
+  }
+
+  private playSupermarketBar() {
+    if (!this.supermarketMusicActive || !this.ctx || !this.supermarketGain || this.muted) return;
+    const ctx = this.ctx;
+    const now = ctx.currentTime;
+    // Cheerful bossa/lounge progression: Fmaj7 -> Em7 -> Dm7 -> Cmaj7 across 16 steps
+    const step = this.supermarketStep % 16;
+    this.supermarketStep++;
+    const chords: number[][] = [
+      [174.61, 220.0, 261.63, 329.63], // Fmaj7
+      [164.81, 196.0, 246.94, 293.66], // Em7
+      [146.83, 174.61, 220.0, 261.63], // Dm7
+      [130.81, 164.81, 196.0, 246.94], // Cmaj7
+    ];
+    const melody = [
+      523.25, 659.25, 587.33, 440.0,
+      493.88, 587.33, 523.25, 392.0,
+      440.0, 523.25, 493.88, 349.23,
+      392.0, 440.0, 523.25, 659.25,
+    ];
+    const chord = chords[Math.floor(step / 4)];
+    if (step % 4 === 0) {
+      for (const freq of chord) {
+        const osc = ctx.createOscillator();
+        const g = ctx.createGain();
+        osc.type = 'sine';
+        osc.frequency.setValueAtTime(freq, now);
+        g.gain.setValueAtTime(0.001, now);
+        g.gain.linearRampToValueAtTime(0.065, now + 0.06);
+        g.gain.exponentialRampToValueAtTime(0.001, now + 2.0);
+        osc.connect(g);
+        g.connect(this.supermarketGain);
+        osc.start(now);
+        osc.stop(now + 2.05);
+      }
+    }
+
+    // Smooth marimba / electric piano bell melody
+    const mFreq = melody[step];
+    const mOsc = ctx.createOscillator();
+    const mGain = ctx.createGain();
+    mOsc.type = 'triangle';
+    mOsc.frequency.setValueAtTime(mFreq, now);
+    mGain.gain.setValueAtTime(0.001, now);
+    mGain.gain.linearRampToValueAtTime(0.09, now + 0.02);
+    mGain.gain.exponentialRampToValueAtTime(0.001, now + 0.44);
+    mOsc.connect(mGain);
+    mGain.connect(this.supermarketGain);
+    mOsc.start(now);
+    mOsc.stop(now + 0.46);
+
+    // Subtle bass pulse on 0, 2
+    if (step % 2 === 0) {
+      const bOsc = ctx.createOscillator();
+      const bGain = ctx.createGain();
+      bOsc.type = 'sine';
+      bOsc.frequency.setValueAtTime(chord[0] * 0.5, now);
+      bGain.gain.setValueAtTime(0.11, now);
+      bGain.gain.exponentialRampToValueAtTime(0.001, now + 0.36);
+      bOsc.connect(bGain);
+      bGain.connect(this.supermarketGain);
+      bOsc.start(now);
+      bOsc.stop(now + 0.38);
+    }
+  }
+
+  public playCashRegister() {
+    const ctx = this.ensureContext();
+    if (!ctx || !this.masterGain || this.muted) return;
+    const now = ctx.currentTime;
+    for (const [off, freq] of [
+      [0, 1240],
+      [0.08, 1760],
+    ]) {
+      const osc = ctx.createOscillator();
+      const g = ctx.createGain();
+      osc.type = 'sine';
+      osc.frequency.setValueAtTime(freq, now + off);
+      g.gain.setValueAtTime(0.22, now + off);
+      g.gain.exponentialRampToValueAtTime(0.001, now + off + 0.38);
+      osc.connect(g);
+      g.connect(this.masterGain);
+      osc.start(now + off);
+      osc.stop(now + off + 0.4);
+    }
+  }
+
+  public playWindPlunge() {
+    const ctx = this.ensureContext();
+    if (!ctx || !this.masterGain || this.muted) return;
+    const now = ctx.currentTime;
+    const len = Math.floor(ctx.sampleRate * 1.6);
+    const buf = ctx.createBuffer(1, len, ctx.sampleRate);
+    const d = buf.getChannelData(0);
+    for (let i = 0; i < len; i++) {
+      const env = Math.sin((i / len) * Math.PI);
+      d[i] = (Math.random() * 2 - 1) * env;
+    }
+    const src = ctx.createBufferSource();
+    src.buffer = buf;
+    const bp = ctx.createBiquadFilter();
+    bp.type = 'bandpass';
+    bp.frequency.setValueAtTime(280, now);
+    bp.frequency.exponentialRampToValueAtTime(980, now + 1.5);
+    bp.Q.value = 0.9;
+    const g = ctx.createGain();
+    g.gain.setValueAtTime(0.32, now);
+    g.gain.exponentialRampToValueAtTime(0.001, now + 1.55);
+    src.connect(bp);
+    bp.connect(g);
+    g.connect(this.masterGain);
+    src.start(now);
+  }
+
+  public playBodySplatGore() {
+    const ctx = this.ensureContext();
+    if (!ctx || !this.masterGain || this.muted) return;
+    const now = ctx.currentTime;
+    const thud = ctx.createOscillator();
+    const tg = ctx.createGain();
+    thud.type = 'sine';
+    thud.frequency.setValueAtTime(140, now);
+    thud.frequency.exponentialRampToValueAtTime(32, now + 0.35);
+    tg.gain.setValueAtTime(0.75, now);
+    tg.gain.exponentialRampToValueAtTime(0.001, now + 0.38);
+    thud.connect(tg);
+    tg.connect(this.masterGain);
+    thud.start(now);
+    thud.stop(now + 0.4);
+
+    const len = Math.floor(ctx.sampleRate * 0.42);
+    const buf = ctx.createBuffer(1, len, ctx.sampleRate);
+    const d = buf.getChannelData(0);
+    for (let i = 0; i < len; i++) {
+      d[i] = (Math.random() * 2 - 1) * Math.exp(-i / (ctx.sampleRate * 0.11));
+    }
+    const src = ctx.createBufferSource();
+    src.buffer = buf;
+    const lp = ctx.createBiquadFilter();
+    lp.type = 'lowpass';
+    lp.frequency.setValueAtTime(1400, now);
+    lp.frequency.exponentialRampToValueAtTime(340, now + 0.35);
+    const g = ctx.createGain();
+    g.gain.setValueAtTime(0.45, now);
+    g.gain.exponentialRampToValueAtTime(0.001, now + 0.38);
+    src.connect(lp);
+    lp.connect(g);
+    g.connect(this.masterGain);
+    src.start(now);
+  }
+
   public dispose() {
+    this.setSupermarketMusic(false);
     this.stopAmbience();
     this.activeNpcVoices = [];
     if (typeof window !== 'undefined' && 'speechSynthesis' in window) {

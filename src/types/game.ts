@@ -32,15 +32,36 @@ export type NpcRole =
   | 'police'
   | 'collector'
   | 'poor'
-  | 'gentleman';
+  | 'gentleman'
+  | 'inmate'
+  | 'marshal';
 
-export type OutfitId = 'tactical' | 'street' | 'suit' | 'worker';
+export type OutfitId =
+  | 'tactical'
+  | 'street'
+  | 'suit'
+  | 'worker'
+  | 'leather'
+  | 'coastal'
+  | 'trench'
+  | 'cyber';
 
 export type HotelRoomId = '201' | '202' | '203';
 
-export type HotelFloor = 1 | 2 | 3;
+export type HotelFloor = 1 | 2 | 3 | 4 | 5 | 6;
 
 export type HotelHeistState = 'none' | 'active' | 'completed';
+
+export type MapId = 'city' | 'coast' | 'sky' | 'prison' | 'plane_incident';
+
+export type VehicleVariant =
+  | 'sedan'
+  | 'coupe'
+  | 'muscle'
+  | 'suv'
+  | 'pickup'
+  | 'van'
+  | 'police';
 
 export type ActiveCinematic =
   | 'none'
@@ -49,7 +70,25 @@ export type ActiveCinematic =
   | 'smash_car_window'
   | 'hotel_checkin'
   | 'bar_wine_serve'
-  | 'deliver_wine';
+  | 'deliver_wine'
+  | 'plane_threat'
+  | 'plane_crash_wasted'
+  | 'fall_plunge_wasted'
+  | 'ocean_dump'
+  | 'arrested_transfer';
+
+export type ShopItemId =
+  | 'energy_drink'
+  | 'bento_meal'
+  | 'medkit'
+  | 'kevlar_vest'
+  | 'ammo_lockpick';
+
+export type ExtraMissionId =
+  | 'bank_hack'
+  | 'airport_briefcase'
+  | 'coast_smuggler'
+  | 'sky_relay';
 
 export type NpcAlertState =
   | 'neutral'
@@ -108,12 +147,38 @@ export interface SideMissionItem {
   done: boolean;
 }
 
+export interface ArrestedFighterInfo {
+  id: string;
+  name: string;
+  bailCost: number;
+}
+
+export interface PrisonNeeds {
+  hunger: number;
+  energy: number;
+  hygiene: number;
+  strength: number;
+}
+
 export interface GameSnapshot {
   phase: GamePhase;
   language: LanguageCode;
   weather: WeatherType;
   weatherVisibilityPct: number;
   inGameTimeStr: string;
+  currentMap: MapId;
+  hasPlaneTicketTo: 'coast' | 'sky' | null;
+  ticketKioskOpen: boolean;
+  policeMenuOpen: boolean;
+  arrestedFighters: ArrestedFighterInfo[];
+  companionCount: number;
+  inHoldingCell: boolean;
+  holdingCellBail: number;
+  prisonNeeds: PrisonNeeds;
+  prisonEscapeProgress: number;
+  planeIntegrity: number;
+  elevatorRiding: boolean;
+  canSurrender: boolean;
   cash: number;
   hasWine: boolean;
   wineDelivered: boolean;
@@ -126,6 +191,14 @@ export interface GameSnapshot {
   robbedHouses: string[];
   peopleHelped: number;
   suitRewardClaimed: boolean;
+  supermarketOpen: boolean;
+  inSupermarket: boolean;
+  armor: number;
+  missionsCompleted: number;
+  bankDataHacked: boolean;
+  airportBriefcaseRecovered: boolean;
+  coastPackageRecovered: boolean;
+  skyRelayHacked: boolean;
   activeSideMissions: SideMissionItem[];
   health: number;
   maxHealth: number;

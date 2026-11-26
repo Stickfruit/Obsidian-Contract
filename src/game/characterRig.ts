@@ -43,6 +43,8 @@ export interface AssassinRig {
     pistol: THREE.Group;
     shotgun: THREE.Group;
     lockpick: THREE.Group;
+    phone: THREE.Group;
+    wineBottle: THREE.Group;
   };
   outfitVisuals: {
     clothMat: THREE.MeshPhysicalMaterial;
@@ -54,6 +56,8 @@ export interface AssassinRig {
     hoodGroup: THREE.Group;
     capGroup: THREE.Group;
     shadesGroup: THREE.Group;
+    fedoraGroup: THREE.Group;
+    cyberVisor: THREE.Group;
     topHair: THREE.Mesh;
     textures: ProceduralTextureSet;
   };
@@ -735,6 +739,44 @@ export function createAssassinRig(textures: ProceduralTextureSet): AssassinRig {
   shadesGroup.visible = false;
   headPivot.add(shadesGroup);
 
+  const fedoraGroup = new THREE.Group();
+  const fedoraMat = new THREE.MeshStandardMaterial({ color: 0x3b2f26, roughness: 0.78 });
+  const fedoraBandMat = new THREE.MeshStandardMaterial({ color: 0x111827, roughness: 0.55 });
+  const fedBrimGeo = new THREE.CylinderGeometry(0.185, 0.19, 0.012, 20);
+  const fedCrownGeo = new THREE.CylinderGeometry(0.1, 0.118, 0.1, 16);
+  const fedBandGeo = new THREE.CylinderGeometry(0.116, 0.119, 0.022, 16);
+  const fedBrim = new THREE.Mesh(fedBrimGeo, fedoraMat);
+  fedBrim.position.set(0, 0.215, 0);
+  const fedCrown = new THREE.Mesh(fedCrownGeo, fedoraMat);
+  fedCrown.position.set(0, 0.265, 0);
+  const fedBand = new THREE.Mesh(fedBandGeo, fedoraBandMat);
+  fedBand.position.set(0, 0.228, 0);
+  fedoraGroup.add(fedBrim, fedCrown, fedBand);
+  fedoraGroup.visible = false;
+  headPivot.add(fedoraGroup);
+
+  const cyberVisor = new THREE.Group();
+  const cyberFrameMat = new THREE.MeshStandardMaterial({
+    color: 0x0f172a,
+    roughness: 0.2,
+    metalness: 0.8,
+  });
+  const cyberGlowMat = new THREE.MeshStandardMaterial({
+    color: 0x38bdf8,
+    emissive: 0x0ea5e9,
+    emissiveIntensity: 1.5,
+    roughness: 0.15,
+  });
+  const cyberBarGeo = new THREE.BoxGeometry(0.128, 0.026, 0.032);
+  const cyberRimGeo = new THREE.BoxGeometry(0.136, 0.034, 0.026);
+  const cyberBar = new THREE.Mesh(cyberBarGeo, cyberGlowMat);
+  cyberBar.position.set(0, 0.184, 0.105);
+  const cyberRim = new THREE.Mesh(cyberRimGeo, cyberFrameMat);
+  cyberRim.position.set(0, 0.184, 0.098);
+  cyberVisor.add(cyberRim, cyberBar);
+  cyberVisor.visible = false;
+  headPivot.add(cyberVisor);
+
   disposables.push(
     hoodGeo,
     maskGeo,
@@ -745,6 +787,15 @@ export function createAssassinRig(textures: ProceduralTextureSet): AssassinRig {
     shadesMat,
     lensGeo,
     bridgeGeo,
+    fedoraMat,
+    fedoraBandMat,
+    fedBrimGeo,
+    fedCrownGeo,
+    fedBandGeo,
+    cyberFrameMat,
+    cyberGlowMat,
+    cyberBarGeo,
+    cyberRimGeo,
   );
 
   function buildAnatomicalLimb(
@@ -1004,6 +1055,52 @@ export function createAssassinRig(textures: ProceduralTextureSet): AssassinRig {
   lockpickGroup.visible = false;
   limbs.rightArm.clothGroup.add(lockpickGroup);
 
+  const phoneGroup = new THREE.Group();
+  const phBodyGeo = new THREE.BoxGeometry(0.068, 0.014, 0.132);
+  const phScreenGeo = new THREE.PlaneGeometry(0.056, 0.114);
+  const phBodyMat = new THREE.MeshStandardMaterial({
+    color: 0x0f172a,
+    roughness: 0.25,
+    metalness: 0.75,
+  });
+  const phScreenMat = new THREE.MeshBasicMaterial({
+    color: 0x38bdf8,
+  });
+  const phBody = new THREE.Mesh(phBodyGeo, phBodyMat);
+  phBody.position.set(0, -0.635, 0.09);
+  const phScreen = new THREE.Mesh(phScreenGeo, phScreenMat);
+  phScreen.rotation.x = -Math.PI / 2;
+  phScreen.position.set(0, -0.626, 0.09);
+  phoneGroup.add(phBody, phScreen);
+  phoneGroup.visible = false;
+  limbs.rightArm.clothGroup.add(phoneGroup);
+
+  const wineGroup = new THREE.Group();
+  const wbBodyGeo = new THREE.CylinderGeometry(0.038, 0.04, 0.19, 10);
+  const wbNeckGeo = new THREE.CylinderGeometry(0.015, 0.02, 0.09, 8);
+  const wbLabelGeo = new THREE.CylinderGeometry(0.04, 0.04, 0.065, 10);
+  const wbGlassMat = new THREE.MeshStandardMaterial({
+    color: 0x1a0b12,
+    roughness: 0.18,
+    metalness: 0.22,
+  });
+  const wbLabelMat = new THREE.MeshStandardMaterial({
+    color: 0x991b1b,
+    roughness: 0.65,
+  });
+  const wbBody = new THREE.Mesh(wbBodyGeo, wbGlassMat);
+  wbBody.position.set(0, -0.63, 0.12);
+  wbBody.rotation.x = Math.PI / 2;
+  const wbNeck = new THREE.Mesh(wbNeckGeo, wbGlassMat);
+  wbNeck.position.set(0, -0.63, 0.245);
+  wbNeck.rotation.x = Math.PI / 2;
+  const wbLabel = new THREE.Mesh(wbLabelGeo, wbLabelMat);
+  wbLabel.position.set(0, -0.63, 0.12);
+  wbLabel.rotation.x = Math.PI / 2;
+  wineGroup.add(wbBody, wbNeck, wbLabel);
+  wineGroup.visible = false;
+  limbs.rightArm.clothGroup.add(wineGroup);
+
   disposables.push(
     kBladeGeo,
     pBodyGeo,
@@ -1014,6 +1111,15 @@ export function createAssassinRig(textures: ProceduralTextureSet): AssassinRig {
     lpHandleGeo,
     lpNeedleGeo,
     lpHookGeo,
+    phBodyGeo,
+    phScreenGeo,
+    phBodyMat,
+    phScreenMat,
+    wbBodyGeo,
+    wbNeckGeo,
+    wbLabelGeo,
+    wbGlassMat,
+    wbLabelMat,
   );
 
   return {
@@ -1034,6 +1140,8 @@ export function createAssassinRig(textures: ProceduralTextureSet): AssassinRig {
       pistol: pistolGroup,
       shotgun: shotgunGroup,
       lockpick: lockpickGroup,
+      phone: phoneGroup,
+      wineBottle: wineGroup,
     },
     outfitVisuals: {
       clothMat,
@@ -1045,6 +1153,8 @@ export function createAssassinRig(textures: ProceduralTextureSet): AssassinRig {
       hoodGroup,
       capGroup,
       shadesGroup,
+      fedoraGroup,
+      cyberVisor,
       topHair,
       textures,
     },
@@ -1055,6 +1165,8 @@ export function createAssassinRig(textures: ProceduralTextureSet): AssassinRig {
 
 export function applyAssassinOutfit(rig: AssassinRig, outfit: OutfitId) {
   const v = rig.outfitVisuals;
+  v.fedoraGroup.visible = false;
+  v.cyberVisor.visible = false;
   if (outfit === 'tactical') {
     v.clothMat.map = v.textures.clothWeaveMap;
     v.clothMat.color.setHex(0x1a202c);
@@ -1094,8 +1206,7 @@ export function applyAssassinOutfit(rig: AssassinRig, outfit: OutfitId) {
     v.shadesGroup.visible = true;
     v.topHair.visible = true;
     rig.coatTails.visible = true;
-  } else {
-    // 'worker'
+  } else if (outfit === 'worker') {
     v.clothMat.map = v.textures.clothWeaveMap;
     v.clothMat.color.setHex(0x1e3a5f);
     v.cargoMat.map = v.textures.cargoFabricMap;
@@ -1108,6 +1219,61 @@ export function applyAssassinOutfit(rig: AssassinRig, outfit: OutfitId) {
     v.shadesGroup.visible = false;
     v.topHair.visible = false;
     rig.coatTails.visible = false;
+  } else if (outfit === 'leather') {
+    v.clothMat.map = v.textures.clothWeaveMap;
+    v.clothMat.color.setHex(0x6b141a);
+    v.cargoMat.map = v.textures.cargoFabricMap;
+    v.cargoMat.color.setHex(0x181a20);
+    v.chestRig.visible = false;
+    v.suitTie.visible = false;
+    v.hiVisVest.visible = false;
+    v.hoodGroup.visible = false;
+    v.capGroup.visible = false;
+    v.shadesGroup.visible = true;
+    v.topHair.visible = true;
+    rig.coatTails.visible = false;
+  } else if (outfit === 'coastal') {
+    v.clothMat.map = v.textures.tankFabricMap;
+    v.clothMat.color.setHex(0x0f766e);
+    v.cargoMat.map = null;
+    v.cargoMat.color.setHex(0xe7e5e4);
+    v.chestRig.visible = false;
+    v.suitTie.visible = false;
+    v.hiVisVest.visible = false;
+    v.hoodGroup.visible = false;
+    v.capGroup.visible = false;
+    v.shadesGroup.visible = true;
+    v.topHair.visible = true;
+    rig.coatTails.visible = false;
+  } else if (outfit === 'trench') {
+    v.clothMat.map = v.textures.clothWeaveMap;
+    v.clothMat.color.setHex(0xa17c52);
+    v.cargoMat.map = null;
+    v.cargoMat.color.setHex(0x1f2937);
+    v.chestRig.visible = false;
+    v.suitTie.visible = true;
+    v.hiVisVest.visible = false;
+    v.hoodGroup.visible = false;
+    v.capGroup.visible = false;
+    v.shadesGroup.visible = false;
+    v.topHair.visible = false;
+    v.fedoraGroup.visible = true;
+    rig.coatTails.visible = true;
+  } else {
+    // 'cyber'
+    v.clothMat.map = v.textures.clothWeaveMap;
+    v.clothMat.color.setHex(0xe2e8f0);
+    v.cargoMat.map = v.textures.cargoFabricMap;
+    v.cargoMat.color.setHex(0x0f172a);
+    v.chestRig.visible = true;
+    v.suitTie.visible = false;
+    v.hiVisVest.visible = false;
+    v.hoodGroup.visible = true;
+    v.capGroup.visible = false;
+    v.shadesGroup.visible = false;
+    v.topHair.visible = false;
+    v.cyberVisor.visible = true;
+    rig.coatTails.visible = true;
   }
   v.clothMat.needsUpdate = true;
   v.cargoMat.needsUpdate = true;
@@ -1125,6 +1291,7 @@ export function setAssassinWeaponVisual(rig: AssassinRig, weapon: WeaponId) {
   rig.handWeapons.pistol.visible = weapon === 'pistol';
   rig.handWeapons.shotgun.visible = weapon === 'shotgun';
   rig.handWeapons.lockpick.visible = weapon === 'lockpick';
+  rig.handWeapons.phone.visible = weapon === 'phone';
 }
 
 /**
@@ -1539,34 +1706,62 @@ export function createNpcRig(
           roughness: 0.62,
           metalness: 0.14,
         })
-      : role === 'guard'
+      : role === 'marshal'
         ? new THREE.MeshStandardMaterial({
-            map: textures.tankFabricMap,
-            roughness: 0.85,
+            color: 0x111827,
+            roughness: 0.48,
+            metalness: 0.22,
           })
-        : role === 'heavy'
+        : role === 'inmate'
           ? new THREE.MeshStandardMaterial({
-              map: textures.clothWeaveMap,
-              color: 0x262f3e,
-              roughness: 0.68,
-              metalness: 0.25,
+              color: 0xea580c,
+              roughness: 0.85,
             })
-          : role === 'target'
+          : role === 'gentleman'
             ? new THREE.MeshStandardMaterial({
-                color: 0x5c1a24,
-                roughness: 0.55,
-                metalness: 0.15,
+                color: 0x1b202b,
+                roughness: 0.48,
+                metalness: 0.16,
               })
-            : role === 'clerk'
+            : role === 'collector'
               ? new THREE.MeshStandardMaterial({
                   color: 0x1e3a5f,
-                  roughness: 0.72,
+                  roughness: 0.78,
                 })
-              : new THREE.MeshStandardMaterial({
-                  map: textures.tankFabricMap,
-                  color: civColors[variantIndex % civColors.length],
-                  roughness: 0.84,
-                });
+              : role === 'poor'
+                ? new THREE.MeshStandardMaterial({
+                    map: textures.tankFabricMap,
+                    color: 0x57534e,
+                    roughness: 0.94,
+                  })
+                : role === 'guard'
+                  ? new THREE.MeshStandardMaterial({
+                      map: textures.tankFabricMap,
+                      roughness: 0.85,
+                    })
+                  : role === 'heavy'
+                    ? new THREE.MeshStandardMaterial({
+                        map: textures.clothWeaveMap,
+                        color: 0x262f3e,
+                        roughness: 0.68,
+                        metalness: 0.25,
+                      })
+                    : role === 'target'
+                      ? new THREE.MeshStandardMaterial({
+                          color: 0x5c1a24,
+                          roughness: 0.55,
+                          metalness: 0.15,
+                        })
+                      : role === 'clerk'
+                        ? new THREE.MeshStandardMaterial({
+                            color: 0x1e3a5f,
+                            roughness: 0.72,
+                          })
+                        : new THREE.MeshStandardMaterial({
+                            map: textures.tankFabricMap,
+                            color: civColors[variantIndex % civColors.length],
+                            roughness: 0.84,
+                          });
 
   const shortsMat =
     role === 'guard' || role === 'civilian'
@@ -1576,12 +1771,30 @@ export function createNpcRig(
           roughness: 0.84,
         })
       : new THREE.MeshStandardMaterial({
-          color: role === 'police' ? 0x111c30 : 0x1a1f28,
-          roughness: 0.72,
+          color:
+            role === 'police' || role === 'marshal'
+              ? 0x111c30
+              : role === 'inmate'
+                ? 0xc2410c
+                : role === 'poor'
+                  ? 0x3b352d
+                  : role === 'collector'
+                    ? 0x1f2937
+                    : 0x1a1f28,
+          roughness: role === 'gentleman' ? 0.52 : 0.78,
         });
 
   const capMat = new THREE.MeshStandardMaterial({
-    color: role === 'police' ? 0x0f1a2d : role === 'heavy' ? 0x222936 : 0x525862,
+    color:
+      role === 'police' || role === 'marshal'
+        ? 0x0f1a2d
+        : role === 'inmate'
+          ? 0xf97316
+          : role === 'heavy'
+            ? 0x222936
+            : role === 'collector'
+              ? 0xf59e0b
+              : 0x525862,
     roughness: 0.8,
   });
   const sockMat = new THREE.MeshStandardMaterial({
@@ -1597,9 +1810,9 @@ export function createNpcRig(
     roughness: 0.85,
   });
   const watchMat = new THREE.MeshStandardMaterial({
-    color: 0x1c2026,
-    roughness: 0.4,
-    metalness: 0.6,
+    color: role === 'gentleman' ? 0xfbbf24 : 0x1c2026,
+    roughness: 0.35,
+    metalness: 0.7,
   });
 
   disposables.push(
@@ -1639,7 +1852,7 @@ export function createNpcRig(
     plate.position.y = 0.42;
     bodyPivot.add(plate);
     disposables.push(plateGeo);
-  } else if (role === 'police') {
+  } else if (role === 'police' || role === 'marshal') {
     const badgeGeo = new THREE.CylinderGeometry(0.032, 0.032, 0.014, 6);
     badgeGeo.rotateX(Math.PI / 2);
     const badgeMat = new THREE.MeshStandardMaterial({
@@ -1654,6 +1867,12 @@ export function createNpcRig(
     belt.position.set(0, 0.05, 0);
     bodyPivot.add(badge, belt);
     disposables.push(badgeGeo, badgeMat, beltGeo);
+  } else if (role === 'inmate') {
+    const tagGeo = new THREE.BoxGeometry(0.14, 0.08, 0.02);
+    const tag = new THREE.Mesh(tagGeo, sockMat);
+    tag.position.set(-0.07, 0.44, 0.145);
+    bodyPivot.add(tag);
+    disposables.push(tagGeo);
   } else if (role === 'clerk') {
     // Store apron panel on chest
     const apronGeo = new THREE.BoxGeometry(0.28, 0.46, 0.04);
@@ -1661,6 +1880,36 @@ export function createNpcRig(
     apron.position.set(0, 0.3, 0.145);
     bodyPivot.add(apron);
     disposables.push(apronGeo);
+  } else if (role === 'collector') {
+    // Hi-visibility safety vest for trash collectors
+    const vestGeo = new THREE.BoxGeometry(0.39, 0.45, 0.28);
+    const vestMat = new THREE.MeshStandardMaterial({
+      color: 0x84cc16,
+      emissive: 0x65a30d,
+      emissiveIntensity: 0.25,
+      roughness: 0.68,
+    });
+    const vest = new THREE.Mesh(vestGeo, vestMat);
+    vest.position.set(0, 0.36, 0);
+    const stripeGeo = new THREE.BoxGeometry(0.4, 0.06, 0.29);
+    const stripe = new THREE.Mesh(stripeGeo, sockMat);
+    stripe.position.set(0, 0.33, 0);
+    bodyPivot.add(vest, stripe);
+    disposables.push(vestGeo, vestMat, stripeGeo);
+  } else if (role === 'gentleman') {
+    // Tailored suit collar shirt & crimson silk tie
+    const shirtGeo = new THREE.BoxGeometry(0.11, 0.3, 0.045);
+    const shirt = new THREE.Mesh(shirtGeo, sockMat);
+    shirt.position.set(0, 0.44, 0.135);
+    const tieGeo = new THREE.BoxGeometry(0.042, 0.26, 0.055);
+    const tieMat = new THREE.MeshStandardMaterial({
+      color: 0x991b1b,
+      roughness: 0.42,
+    });
+    const tie = new THREE.Mesh(tieGeo, tieMat);
+    tie.position.set(0, 0.41, 0.148);
+    bodyPivot.add(shirt, tie);
+    disposables.push(shirtGeo, tieGeo, tieMat);
   }
 
   const head = buildRealisticHeadGroup(
@@ -1669,23 +1918,36 @@ export function createNpcRig(
     capMat,
     role === 'guard' ||
       role === 'police' ||
+      role === 'collector' ||
       (role === 'civilian' && variantIndex % 2 === 0),
     false,
     null,
     disposables,
   );
   head.position.y = 0.64;
+  if (role === 'gentleman') {
+    const hairGeo = new THREE.SphereGeometry(0.118, 12, 8, 0, Math.PI * 2, 0, Math.PI * 0.56);
+    const hairMat = new THREE.MeshStandardMaterial({ color: 0x1c1917, roughness: 0.55 });
+    const hair = new THREE.Mesh(hairGeo, hairMat);
+    hair.position.set(0, 0.09, -0.01);
+    head.add(hair);
+    disposables.push(hairGeo, hairMat);
+  }
   bodyPivot.add(head);
 
   function makeNpcArm(side: -1 | 1): { arm: THREE.Group; forearmPivot: THREE.Group } {
     const arm = new THREE.Group();
     arm.position.set(side * 0.245, 0.56, 0);
 
+    const sleeved =
+      role === 'target' ||
+      role === 'police' ||
+      role === 'marshal' ||
+      role === 'inmate' ||
+      role === 'gentleman' ||
+      role === 'collector';
     const upperArmGeo = createContouredUpperArmGeo(0.31);
-    const upper = new THREE.Mesh(
-      upperArmGeo,
-      role === 'target' || role === 'police' ? torsoMat : skinMat,
-    );
+    const upper = new THREE.Mesh(upperArmGeo, sleeved ? torsoMat : skinMat);
     upper.castShadow = true;
     arm.add(upper);
 
@@ -1694,11 +1956,14 @@ export function createNpcRig(
     arm.add(forearmPivot);
 
     const forearmGeo = createContouredForearmGeo(0.29);
-    const forearm = new THREE.Mesh(forearmGeo, skinMat);
+    const forearm = new THREE.Mesh(
+      forearmGeo,
+      role === 'gentleman' ? torsoMat : skinMat,
+    );
     forearm.castShadow = true;
     forearmPivot.add(forearm);
 
-    if (side === 1) {
+    if (side === 1 && role !== 'poor') {
       const watchGeo = new THREE.CylinderGeometry(0.036, 0.036, 0.03, 10);
       const watch = new THREE.Mesh(watchGeo, watchMat);
       watch.position.y = -0.24;
@@ -1709,6 +1974,22 @@ export function createNpcRig(
     const hand = buildRealisticHandGroup(skinMat, null, side, disposables);
     hand.position.y = -0.29;
     forearmPivot.add(hand);
+
+    if (role === 'collector' && side === -1) {
+      // Heavy black city trash bag gripped in right hand
+      const bagGeo = new THREE.DodecahedronGeometry(0.22, 0);
+      bagGeo.scale(0.85, 1.25, 0.85);
+      const bagMat = new THREE.MeshStandardMaterial({
+        color: 0x111827,
+        roughness: 0.45,
+        metalness: 0.15,
+      });
+      const bag = new THREE.Mesh(bagGeo, bagMat);
+      bag.position.set(-0.04, -0.45, 0.04);
+      bag.castShadow = true;
+      forearmPivot.add(bag);
+      disposables.push(bagGeo, bagMat);
+    }
 
     disposables.push(upperArmGeo, forearmGeo);
     return { arm, forearmPivot };
@@ -1767,7 +2048,11 @@ export function createNpcRig(
   muzzleFlash.position.set(0.02, -0.32, role === 'heavy' || role === 'clerk' ? 0.47 : 0.38);
   muzzleFlash.visible = false;
   weaponGroup.add(muzzleFlash);
-  weaponGroup.visible = role === 'guard' || role === 'heavy' || role === 'target';
+  weaponGroup.visible =
+    role === 'guard' ||
+    role === 'heavy' ||
+    role === 'target' ||
+    role === 'marshal';
   rightArmRig.forearmPivot.add(weaponGroup);
   disposables.push(gunGeo, flashGeo, flashMat);
 
@@ -1840,4 +2125,96 @@ export function createNpcRig(
     contactShadow,
     disposables,
   };
+}
+
+export function createSeveredHeadWithSpineRig(textures: ProceduralTextureSet): {
+  group: THREE.Group;
+  disposables: Array<{ dispose: () => void }>;
+} {
+  const disposables: Array<{ dispose: () => void }> = [];
+  const root = new THREE.Group();
+
+  const skinMat = new THREE.MeshStandardMaterial({
+    map: textures.skinArmLegMap,
+    roughness: 0.56,
+  });
+  const faceMat = new THREE.MeshStandardMaterial({
+    map: textures.faceTextureMap,
+    roughness: 0.58,
+  });
+  const capMat = new THREE.MeshStandardMaterial({
+    color: 0x1c1f26,
+    roughness: 0.85,
+  });
+  const hoodMat = new THREE.MeshStandardMaterial({
+    color: 0x161a24,
+    roughness: 0.82,
+  });
+  const boneMat = new THREE.MeshStandardMaterial({
+    color: 0xe7dfd0,
+    roughness: 0.42,
+  });
+  const goreMat = new THREE.MeshStandardMaterial({
+    color: 0x7f1d1d,
+    emissive: 0x450a0a,
+    emissiveIntensity: 0.35,
+    roughness: 0.3,
+  });
+
+  const head = buildRealisticHeadGroup(
+    faceMat,
+    skinMat,
+    capMat,
+    false,
+    false,
+    hoodMat,
+    disposables,
+  );
+  head.position.set(0, 0.14, 0);
+  root.add(head);
+
+  // Raw severed neck stump at the base of the skull
+  const stumpGeo = new THREE.CylinderGeometry(0.068, 0.078, 0.08, 10);
+  const stump = new THREE.Mesh(stumpGeo, goreMat);
+  stump.position.set(0, 0.02, -0.005);
+  root.add(stump);
+
+  // 5-segment attached cervical vertebrae spine trailing beneath the severed head
+  const vertebraGeo = new THREE.CylinderGeometry(0.036, 0.04, 0.068, 8);
+  const discGeo = new THREE.CylinderGeometry(0.03, 0.03, 0.018, 8);
+  const spinousGeo = new THREE.BoxGeometry(0.018, 0.04, 0.058);
+
+  for (let i = 0; i < 5; i++) {
+    const segY = -0.055 - i * 0.082;
+    const segZ = -Math.sin(i * 0.32) * 0.03;
+
+    const vert = new THREE.Mesh(vertebraGeo, boneMat);
+    vert.position.set(0, segY, segZ);
+    vert.rotation.x = 0.08 * i;
+    root.add(vert);
+
+    const disc = new THREE.Mesh(discGeo, goreMat);
+    disc.position.set(0, segY + 0.038, segZ);
+    root.add(disc);
+
+    const spike = new THREE.Mesh(spinousGeo, boneMat);
+    spike.position.set(0, segY, segZ - 0.036);
+    spike.rotation.x = 0.35;
+    root.add(spike);
+  }
+
+  disposables.push(
+    skinMat,
+    faceMat,
+    capMat,
+    hoodMat,
+    boneMat,
+    goreMat,
+    stumpGeo,
+    vertebraGeo,
+    discGeo,
+    spinousGeo,
+  );
+
+  return { group: root, disposables };
 }

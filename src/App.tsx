@@ -5,9 +5,11 @@ import type {
   CameraPreset,
   DialogueMessage,
   GameSnapshot,
+  HotelFloor,
   HotelRoomId,
   LanguageCode,
   OutfitId,
+  ShopItemId,
   TalkTargetInfo,
   WeaponId,
 } from './types/game';
@@ -17,6 +19,41 @@ const INITIAL_SNAPSHOT: GameSnapshot = {
   language: 'en',
   weather: 'sunny',
   weatherVisibilityPct: 128,
+  inGameTimeStr: '21:35',
+  currentMap: 'city',
+  hasPlaneTicketTo: null,
+  ticketKioskOpen: false,
+  policeMenuOpen: false,
+  arrestedFighters: [],
+  companionCount: 0,
+  inHoldingCell: false,
+  holdingCellBail: 200,
+  prisonNeeds: { hunger: 82, energy: 86, hygiene: 82, strength: 15 },
+  prisonEscapeProgress: 0,
+  planeIntegrity: 100,
+  elevatorRiding: false,
+  canSurrender: false,
+  cash: 250,
+  hasWine: false,
+  wineDelivered: false,
+  drunkTimer: 0,
+  hotelFloor: 1,
+  elevatorMenuOpen: false,
+  phoneOpen: false,
+  watchedVideoIds: [],
+  revealedHouses: [],
+  robbedHouses: [],
+  peopleHelped: 0,
+  suitRewardClaimed: false,
+  activeSideMissions: [],
+  supermarketOpen: false,
+  inSupermarket: false,
+  armor: 0,
+  missionsCompleted: 0,
+  bankDataHacked: false,
+  airportBriefcaseRecovered: false,
+  coastPackageRecovered: false,
+  skyRelayHacked: false,
   health: 100,
   maxHealth: 100,
   stamina: 100,
@@ -80,6 +117,7 @@ export default function App() {
   const [chatTarget, setChatTarget] = useState<TalkTargetInfo | null>(null);
   const [chatHistory, setChatHistory] = useState<DialogueMessage[]>([]);
   const [chatLoading, setChatLoading] = useState(false);
+  const chatAbortRef = useRef<AbortController | null>(null);
   const snapshotRef = useRef<GameSnapshot>(INITIAL_SNAPSHOT);
   snapshotRef.current = snapshot;
 
@@ -170,7 +208,10 @@ export default function App() {
   }, []);
 
   const handleCloseChat = useCallback(() => {
+    chatAbortRef.current?.abort();
+    chatAbortRef.current = null;
     setChatTarget(null);
+    setChatLoading(false);
     engineRef.current?.setConversationActive(false);
   }, []);
 
@@ -210,9 +251,66 @@ export default function App() {
     engineRef.current?.cycleWeather();
   }, []);
 
+  const handleTogglePhone = useCallback(() => {
+    engineRef.current?.togglePhone();
+  }, []);
+
+  const handleWatchPhoneVideo = useCallback((videoId: string) => {
+    engineRef.current?.watchPhoneVideo(videoId);
+  }, []);
+
+  const handleDrinkWine = useCallback(() => {
+    engineRef.current?.drinkWine();
+  }, []);
+
+  const handleUseElevator = useCallback((floor: HotelFloor) => {
+    engineRef.current?.useHotelElevator(floor);
+  }, []);
+
+  const handleCloseElevator = useCallback(() => {
+    engineRef.current?.closeElevatorMenu();
+  }, []);
+
+  const handleCloseTicketKiosk = useCallback(() => {
+    engineRef.current?.closeTicketKiosk();
+  }, []);
+
+  const handleBuyPlaneTicket = useCallback((dest: 'coast' | 'sky') => {
+    engineRef.current?.buyPlaneTicket(dest);
+  }, []);
+
+  const handleClosePoliceMenu = useCallback(() => {
+    engineRef.current?.closePoliceMenu();
+  }, []);
+
+  const handlePayFighterBail = useCallback((fighterId: string) => {
+    engineRef.current?.payFighterBail(fighterId);
+  }, []);
+
+  const handlePayHoldingCellBail = useCallback(() => {
+    engineRef.current?.payHoldingCellBail();
+  }, []);
+
+  const handleSurrender = useCallback(() => {
+    engineRef.current?.surrenderToPolice();
+  }, []);
+
+  const handleCloseSupermarket = useCallback(() => {
+    engineRef.current?.closeSupermarket();
+  }, []);
+
+  const handleBuySupermarketItem = useCallback((itemId: ShopItemId) => {
+    engineRef.current?.buySupermarketItem(itemId);
+  }, []);
+
   const handleSendChat = useCallback(
     async (text: string) => {
       if (!chatTarget) return;
+      chatAbortRef.current?.abort();
+      const controller = new AbortController();
+      chatAbortRef.current = controller;
+      const timeoutId = window.setTimeout(() => controller.abort(), 5000);
+
       const nextHist: DialogueMessage[] = [
         ...chatHistory,
         { sender: 'player', text },
@@ -220,11 +318,22 @@ export default function App() {
       setChatHistory(nextHist);
       setChatLoading(true);
 
+      const upsertNpcBubble = (replyText: string) => {
+        setChatHistory((prev) => {
+          const last = prev[prev.length - 1];
+          if (last && last.sender === 'npc' && prev.length > nextHist.length) {
+            return [...prev.slice(0, -1), { sender: 'npc', text: replyText }];
+          }
+          return [...prev, { sender: 'npc', text: replyText }];
+        });
+      };
+
       try {
         const snap = snapshotRef.current;
-        const res = await fetch('/api/npc-chat', {
+        const res = await fetch('/api/npc-chat?stream=1', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
+          signal: controller.signal,
           body: JSON.stringify({
             npcName: chatTarget.name,
             npcRole: chatTarget.role,
@@ -236,22 +345,64 @@ export default function App() {
             history: nextHist,
           }),
         });
-        if (res.ok) {
+
+        const contentType = res.headers.get('content-type') || '';
+        if (res.ok && contentType.includes('text/event-stream') && res.body) {
+          const reader = res.body.getReader();
+          const decoder = new TextDecoder();
+          let buffer = '';
+          let finalReply = '';
+          let finalMood = 'calm';
+
+          while (true) {
+            const { value, done } = await reader.read();
+            if (done) break;
+            buffer += decoder.decode(value, { stream: true });
+            const lines = buffer.split('\n\n');
+            buffer = lines.pop() ?? '';
+
+            for (const block of lines) {
+              const dataLine = block
+                .split('\n')
+                .find((l) => l.startsWith('data: '));
+              if (!dataLine) continue;
+              try {
+                const evt = JSON.parse(dataLine.slice(6)) as {
+                  partial?: string;
+                  reply?: string;
+                  mood?: string;
+                  done?: boolean;
+                  error?: string;
+                };
+                if (evt.partial) {
+                  setChatLoading(false);
+                  upsertNpcBubble(evt.partial);
+                }
+                if (evt.reply) finalReply = evt.reply;
+                if (evt.mood) finalMood = evt.mood;
+              } catch {
+                // ignore malformed partial frame
+              }
+            }
+          }
+
+          const spokenReply =
+            finalReply || 'Watch yourself out here tonight, stranger.';
+          upsertNpcBubble(spokenReply);
+          void engineRef.current?.speakAiReply(chatTarget.id, spokenReply, finalMood);
+        } else if (res.ok) {
           const data = (await res.json()) as { reply?: string; mood?: string };
           const reply =
             data.reply || 'Watch yourself out here tonight, stranger.';
           const mood = data.mood || 'calm';
-          setChatHistory((prev) => [...prev, { sender: 'npc', text: reply }]);
+          upsertNpcBubble(reply);
           void engineRef.current?.speakAiReply(chatTarget.id, reply, mood);
         } else {
           const fallbackReply =
             snap.wantedLevel > 0
               ? "Stay back! I don't want any trouble!"
               : 'Just a quiet shift on the avenue. Keep moving.';
-          setChatHistory((prev) => [
-            ...prev,
-            { sender: 'npc', text: fallbackReply },
-          ]);
+          upsertNpcBubble(fallbackReply);
           void engineRef.current?.speakAiReply(
             chatTarget.id,
             fallbackReply,
@@ -260,9 +411,13 @@ export default function App() {
         }
       } catch {
         const fallback = 'Keep moving along, friend.';
-        setChatHistory((prev) => [...prev, { sender: 'npc', text: fallback }]);
+        upsertNpcBubble(fallback);
         void engineRef.current?.speakAiReply(chatTarget.id, fallback, 'calm');
       } finally {
+        window.clearTimeout(timeoutId);
+        if (chatAbortRef.current === controller) {
+          chatAbortRef.current = null;
+        }
         setChatLoading(false);
       }
     },
@@ -325,6 +480,19 @@ export default function App() {
         onSelectHotelRoom={handleSelectHotelRoom}
         onCloseHotelMenu={handleCloseHotelMenu}
         onCycleWeather={handleCycleWeather}
+        onTogglePhone={handleTogglePhone}
+        onWatchPhoneVideo={handleWatchPhoneVideo}
+        onDrinkWine={handleDrinkWine}
+        onUseElevator={handleUseElevator}
+        onCloseElevator={handleCloseElevator}
+        onCloseTicketKiosk={handleCloseTicketKiosk}
+        onBuyPlaneTicket={handleBuyPlaneTicket}
+        onClosePoliceMenu={handleClosePoliceMenu}
+        onPayFighterBail={handlePayFighterBail}
+        onPayHoldingCellBail={handlePayHoldingCellBail}
+        onSurrender={handleSurrender}
+        onCloseSupermarket={handleCloseSupermarket}
+        onBuySupermarketItem={handleBuySupermarketItem}
       />
     </div>
   );

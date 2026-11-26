@@ -3,7 +3,7 @@ import express from "express";
 import fs from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
-import { GoogleGenAI, ThinkingLevel, Type } from "@google/genai";
+import { GoogleGenAI, ThinkingLevel } from "@google/genai";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -161,12 +161,14 @@ async function startServer() {
 
       const roleDescription =
         npcRole === "clerk"
-          ? "a shopkeeper/bartender working behind the counter inside a city venue"
+          ? "shopkeeper/bartender"
           : npcRole === "civilian"
-            ? "an ordinary city resident walking the streets at night"
+            ? "city resident"
             : npcRole === "target"
-              ? "a powerful, arrogant syndicate boss overseeing illicit operations"
-              : "a street security guard patrolling the district";
+              ? "arrogant syndicate boss"
+              : npcRole === "police"
+                ? "police officer"
+                : "street guard";
 
       const langName =
         language === "es"
@@ -178,53 +180,100 @@ async function startServer() {
               : "English";
 
       const contextLines = (history || [])
-        .slice(-6)
-        .map((h) => `${h.sender === "player" ? "Stranger" : npcName}: ${h.text}`)
+        .slice(-3)
+        .map((h) => `${h.sender === "player" ? "Player" : "NPC"}: ${h.text}`)
         .join("\n");
 
       const prompt = [
-        `You are ${npcName || "City Resident"}, ${roleDescription} in ${zone || "Downtown"}.`,
-        `Current city alert/wanted level: ${wantedLevel ?? 0} (0 means the stranger looks like a normal citizen; >0 means violence or gunfire was recently reported).`,
-        `The stranger's currently visible gear: ${equippedWeapon || "unarmed"}.`,
-        contextLines ? `Recent dialogue:\n${contextLines}` : "",
-        `Stranger says: "${playerMessage.trim()}"`,
-        `Reply naturally in ${langName} in 1 to 2 concise spoken sentences. Also set mood to "calm", "nervous", "hostile", or "flee".`,
+        `NPC: ${npcName || "Resident"} (${roleDescription}) in ${zone || "Downtown"}. Wanted=${wantedLevel ?? 0}, Gear=${equippedWeapon || "unarmed"}.`,
+        contextLines ? `Recent:\n${contextLines}` : "",
+        `Player: "${playerMessage.trim()}"`,
+        `Output format: [mood] reply. Mood must be one of calm, nervous, hostile, flee. Reply in ${langName}, 1 short spoken sentence (<22 words).`,
       ]
         .filter(Boolean)
-        .join("\n\n");
+        .join("\n");
+
+      const parseTaggedReply = (raw: string) => {
+        const trimmed = raw.trim();
+        const match = /^\[(calm|nervous|hostile|flee)\]\s*(.*)$/is.exec(trimmed);
+        if (match) {
+          return {
+            mood: match[1].toLowerCase(),
+            reply:
+              match[2].trim() || "Keep moving, pal. Rough night out there.",
+          };
+        }
+        return {
+          mood: "calm",
+          reply: trimmed || "Keep moving, pal. Rough night out there.",
+        };
+      };
+
+      const wantStream = req.query.stream === "1";
+
+      if (wantStream) {
+        res.setHeader("Content-Type", "text/event-stream");
+        res.setHeader("Cache-Control", "no-cache, no-transform");
+        res.setHeader("Connection", "keep-alive");
+        res.flushHeaders?.();
+
+        let fullText = "";
+        const stream = await ai.models.generateContentStream({
+          model: "gemini-3.1-flash-lite",
+          contents: prompt,
+          config: {
+            systemInstruction: `Stay in character as a street-level open-world city NPC. Always start with [calm], [nervous], [hostile], or [flee], then 1 concise spoken sentence in ${langName}.`,
+            thinkingConfig: { thinkingLevel: ThinkingLevel.MINIMAL },
+          },
+        });
+
+        for await (const chunk of stream) {
+          const piece = chunk.text ?? "";
+          if (!piece) continue;
+          fullText += piece;
+          const partial = parseTaggedReply(fullText);
+          res.write(
+            `data: ${JSON.stringify({
+              partial: partial.reply,
+              mood: partial.mood,
+              done: false,
+            })}\n\n`,
+          );
+        }
+
+        const finalResult = parseTaggedReply(fullText);
+        res.write(
+          `data: ${JSON.stringify({
+            reply: finalResult.reply,
+            mood: finalResult.mood,
+            done: true,
+          })}\n\n`,
+        );
+        res.end();
+        return;
+      }
 
       const response = await ai.models.generateContent({
-        model: "gemini-4-hydrogen",
+        model: "gemini-3.1-flash-lite",
         contents: prompt,
         config: {
-          systemInstruction:
-            `Stay strictly in character as a gritty, grounded open-world city NPC. Always reply in ${langName}. Keep replies punchy, spoken, and under 30 words.`,
-          responseMimeType: "application/json",
-          responseSchema: {
-            type: Type.OBJECT,
-            properties: {
-              reply: { type: Type.STRING },
-              mood: { type: Type.STRING },
-            },
-          },
-          thinkingConfig: { thinkingLevel: ThinkingLevel.LOW },
+          systemInstruction: `Stay in character as a street-level open-world city NPC. Always start with [calm], [nervous], [hostile], or [flee], then 1 concise spoken sentence in ${langName}.`,
+          thinkingConfig: { thinkingLevel: ThinkingLevel.MINIMAL },
         },
       });
 
-      const parsed = JSON.parse((response.text ?? "{}").trim()) as {
-        reply?: string;
-        mood?: string;
-      };
-
-      res.json({
-        reply: parsed.reply || "Keep moving, pal. Rough night out there.",
-        mood: parsed.mood || "calm",
-      });
+      const result = parseTaggedReply(response.text ?? "");
+      res.json(result);
     } catch (err: unknown) {
       const message =
         err instanceof Error ? err.message : "Failed to generate NPC reply.";
       console.error("NPC chat error:", message);
-      res.status(500).json({ error: message });
+      if (res.headersSent) {
+        res.write(`data: ${JSON.stringify({ error: message, done: true })}\n\n`);
+        res.end();
+      } else {
+        res.status(500).json({ error: message });
+      }
     }
   });
 

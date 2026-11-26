@@ -2,22 +2,28 @@ import * as THREE from 'three';
 import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
 import type {
   ActiveCinematic,
+  ArrestedFighterInfo,
   CameraPreset,
   CityCollider,
   CityLightAnchor,
   CityZone,
   GamePhase,
   GameSnapshot,
+  HotelFloor,
   HotelHeistState,
   HotelRoomId,
   LanguageCode,
   LimbId,
   LimbMap,
+  MapId,
   NpcAlertState,
   NpcRole,
   OutfitId,
+  PrisonNeeds,
   RadarBlip,
   RegenStage,
+  ShopItemId,
+  SideMissionItem,
   StealthState,
   TalkTargetInfo,
   VoiceCaption,
@@ -34,6 +40,7 @@ import {
   applyRagdollPose,
   createAssassinRig,
   createNpcRig,
+  createSeveredHeadWithSpineRig,
   setAssassinWeaponVisual,
   updateClothPhysics,
   type AssassinRig,
@@ -41,14 +48,25 @@ import {
 } from './characterRig';
 import {
   buildCityDistrict,
+  type BirdPerchSpec,
   type DestructibleGlassSpec,
   type DriveableVehicleSpec,
   type DumpsterSpec,
+  type ExtraMissionSpot,
   type HotelRoomDoorSpec,
   type HotelVexSpec,
+  type HouseSpec,
+  type PlaneWallBounds,
+  type PrisonStationsSpec,
   type UtilityPoleSpec,
   type WantedPosterSlot,
 } from './cityBuilder';
+import {
+  buildCoastMap,
+  buildPlaneIncidentMap,
+  buildPrisonMap,
+  buildSkyCityMap,
+} from './worldMapsBuilder';
 import { createProceduralTextures, type ProceduralTextureSet } from './textures';
 
 interface NpcEntity {
@@ -88,6 +106,7 @@ interface NpcEntity {
   isDynamicSpawn?: boolean;
   isPoliceOfficer?: boolean;
   isPlayerFighter?: boolean;
+  isCompanion?: boolean;
   disposed: boolean;
 }
 
@@ -113,6 +132,21 @@ interface ParticleBurst {
   velocities: Float32Array;
   life: number;
   maxLife: number;
+}
+
+interface BirdEntity {
+  root: THREE.Group;
+  leftWingPivot: THREE.Group;
+  rightWingPivot: THREE.Group;
+  perchPos: THREE.Vector3;
+  position: THREE.Vector3;
+  velocity: THREE.Vector3;
+  state: 'perched' | 'gliding' | 'startled';
+  flapPhase: number;
+  timer: number;
+  isSkyBird: boolean;
+  orbitAngle: number;
+  orbitRadius: number;
 }
 
 const LIMB_IDS: LimbId[] = [
@@ -252,7 +286,7 @@ const WEATHER_CONFIGS: Record<WeatherType, WeatherConfig> = {
 const SHELTER_ANCHORS: THREE.Vector3[] = [
   new THREE.Vector3(-25, 0, -24), // Parking Garage Bay 04
   new THREE.Vector3(-20, 0, 26),  // 24H Neon Lounge
-  new THREE.Vector3(20, 0, 24),   // 24H Corner Mart
+  new THREE.Vector3(24, 0, 24),   // 24H SuperMart
   new THREE.Vector3(20, 0, -26),  // Syndicate Tower Lobby
   new THREE.Vector3(-20, 0, 72),  // Atelier Vex Boutique
   new THREE.Vector3(-26, 0, -76), // Hotel Vex Lobby
@@ -334,8 +368,9 @@ export class AssassinEngine {
   private silenceDumped = false;
   private silenceLidClosed = false;
   private lockpickMinigameOpen = false;
-  private lockpickTarget: 'car' | 'hotel_204' | null = null;
+  private lockpickTarget: 'car' | 'hotel_204' | 'house' | null = null;
   private lockpickCar: DriveableVehicleSpec | null = null;
+  private lockpickHouse: HouseSpec | null = null;
   private smashCar: DriveableVehicleSpec | null = null;
   private smashWindowBroken = false;
   private smashPainCried = false;
@@ -346,6 +381,94 @@ export class AssassinEngine {
   private hotelRoomMenuOpen = false;
   private chosenHotelRoom: HotelRoomId | null = null;
   private hotelHeistState: HotelHeistState = 'none';
+  private elevatorMenuOpen = false;
+  private elevatorRiding = false;
+  private elevatorCurrentY = 0.14;
+  private elevatorTargetY = 0.14;
+  private elevatorDoorProgress = 1; // 1 = open, 0 = closed
+  private elevatorPhase: 'idle' | 'closing' | 'moving' | 'opening' = 'idle';
+
+  private currentMap: MapId = 'city';
+  private mapBounds = { minX: -115, maxX: 232, minZ: -115, maxZ: 160 };
+  private policeDeskPos: THREE.Vector3 | null = null;
+  private holdingCellPos: THREE.Vector3 | null = null;
+  private cellBailPos: THREE.Vector3 | null = null;
+  private cellReleasePos: THREE.Vector3 | null = null;
+  private cellDoorMesh: THREE.Group | null = null;
+  private cellDoorColliderIndex = -1;
+  private airportDeskPos: THREE.Vector3 | null = null;
+  private planeBoardPos: THREE.Vector3 | null = null;
+  private supermarketCheckoutPos: THREE.Vector3 | null = null;
+  private extraMissions: ExtraMissionSpot[] = [];
+  private decals: THREE.Mesh[] = [];
+  private mapReturnPos: THREE.Vector3 | null = null;
+  private oceanShoreZ: number | null = null;
+  private oceanWaterMesh: THREE.Mesh | null = null;
+  private oceanBaseY: Float32Array | null = null;
+  private fallDeathY: number | null = null;
+  private prisonStations: PrisonStationsSpec | null = null;
+  private planeWalls: PlaneWallBounds[] = [];
+  private planeCabinExplodeGroup: THREE.Group | null = null;
+
+  private hasPlaneTicketTo: 'coast' | 'sky' | null = null;
+  private ticketKioskOpen = false;
+  private policeMenuOpen = false;
+  private supermarketOpen = false;
+  private armor = 0;
+  private bankDataHacked = false;
+  private airportBriefcaseRecovered = false;
+  private coastPackageRecovered = false;
+  private skyRelayHacked = false;
+  private fallPeakY = 0;
+  private fallPlungeStreetY = 0;
+  private fallPlungeImpactX = 0;
+  private fallPlungeImpactZ = 0;
+  private fallPlungeIsCityHighDrop = false;
+  private fallGoreSpawned = false;
+  private fallCinematicStartPos = new THREE.Vector3();
+  private arrestedFighters: ArrestedFighterInfo[] = [];
+  private companionsRoster: Array<{ id: string; name: string; voiceName: 'Charon' | 'Puck' | 'Kore' | 'Zephyr' }> = [];
+  private inHoldingCell = false;
+  private holdingCellBail = 200;
+  private prisonNeeds: PrisonNeeds = { hunger: 82, energy: 86, hygiene: 82, strength: 15 };
+  private prisonEscapeProgress = 0;
+  private planeIntegrity = 100;
+  private marshalThreatSpoken = false;
+  private oceanDumpNpc: NpcEntity | null = null;
+  private oceanDumpStartPos = new THREE.Vector3();
+  private oceanDumpSplashed = false;
+  private arrestedTargetWanted = 1;
+  private arrestedTransferDone = false;
+  private severedHeadRig: {
+    group: THREE.Group;
+    disposables: Array<{ dispose: () => void }>;
+  } | null = null;
+  private planeExploded = false;
+  private planeCameraFrozen = false;
+
+  private houses: HouseSpec[] = [];
+  private birdPerches: BirdPerchSpec[] = [];
+  private birds: BirdEntity[] = [];
+  private birdDisposables: Array<{ dispose: () => void }> = [];
+  private barWinePos = new THREE.Vector3();
+  private villaTablePos = new THREE.Vector3();
+
+  private cash = 250;
+  private hasWine = false;
+  private wineDelivered = false;
+  private suitRewardClaimed = false;
+  private wineCinematicServed = false;
+  private wineDeliveryRewarded = false;
+  private drunkTimer = 0;
+  private inGameMinutes = 21 * 60 + 35;
+  private phoneOpen = false;
+  private watchedVideoIds = new Set<string>();
+  private revealedHouses = new Set<string>();
+  private robbedHouses = new Set<string>();
+  private oakDriveRecovered = false;
+  private peopleHelped = 0;
+  private helpedNpcIds = new Set<string>();
+  private poorCelebrateTimer = new Map<string, number>();
 
   private policeDispatch: {
     active: boolean;
@@ -380,7 +503,7 @@ export class AssassinEngine {
   private isRagdoll = false;
   private ragdollProgress = 0;
   private ragdollSeed = 1;
-  private deathReasonKey: 'crash' | 'combat' | null = null;
+  private deathReasonKey: 'crash' | 'combat' | 'fall' | 'fall_high' | 'plane_explosion' | null = null;
 
   private limbs: LimbMap = createDefaultLimbs();
   private isRegenerating = false;
@@ -482,7 +605,7 @@ export class AssassinEngine {
       58,
       Math.max(1, container.clientWidth) / Math.max(1, container.clientHeight),
       0.1,
-      320,
+      680,
     );
 
     const pmrem = new THREE.PMREMGenerator(this.renderer);
@@ -631,25 +754,254 @@ export class AssassinEngine {
     this.emitSnapshot();
   }
 
-  private rebuildWorld() {
+  private rebuildWorld(mapId: MapId = 'city') {
     if (this.cityGroup) {
       this.scene.remove(this.cityGroup);
     }
-    const city = buildCityDistrict(this.textures, this.isSoftwareGl);
-    this.cityGroup = city.group;
-    this.colliders = city.colliders;
-    this.walkables = city.walkables;
-    this.lightAnchors = city.lightAnchors;
-    this.zones = city.zones;
-    this.vehicles = city.vehicles;
-    this.destructibleGlass = city.destructibleGlass;
-    this.utilityPoles = city.utilityPoles;
-    this.dumpsters = city.dumpsters;
-    this.wantedPosters = city.wantedPosters;
-    this.hotelVex = city.hotelVex;
-    this.npcSpawns = city.npcSpawns;
-    this.disposables.push(...city.disposables);
+    this.decals.forEach((m) => {
+      this.scene.remove(m);
+      m.geometry.dispose();
+      (m.material as THREE.Material).dispose();
+    });
+    this.decals = [];
+
+    this.disposables.forEach((d) => {
+      try {
+        d.dispose();
+      } catch {
+        // Ignore shared disposal safely
+      }
+    });
+    this.disposables = [];
+
+    if (this.severedHeadRig) {
+      this.scene.remove(this.severedHeadRig.group);
+      this.severedHeadRig.disposables.forEach((d) => d.dispose());
+      this.severedHeadRig = null;
+    }
+
+    const built =
+      mapId === 'coast'
+        ? buildCoastMap(this.textures)
+        : mapId === 'sky'
+          ? buildSkyCityMap(this.textures)
+          : mapId === 'prison'
+            ? buildPrisonMap(this.textures)
+            : mapId === 'plane_incident'
+              ? buildPlaneIncidentMap(this.textures)
+              : buildCityDistrict(this.textures, this.isSoftwareGl);
+
+    this.currentMap = mapId;
+    this.cityGroup = built.group;
+    this.colliders = built.colliders;
+    this.walkables = built.walkables;
+    this.lightAnchors = built.lightAnchors;
+    this.zones = built.zones;
+    this.vehicles = built.vehicles;
+    this.destructibleGlass = built.destructibleGlass;
+    this.utilityPoles = built.utilityPoles;
+    this.dumpsters = built.dumpsters;
+    this.wantedPosters = built.wantedPosters;
+    this.hotelVex = built.hotelVex;
+    this.houses = built.houses;
+    this.birdPerches = built.birdPerches;
+    this.barWinePos.copy(built.barWinePos);
+    this.villaTablePos.copy(built.villaTablePos);
+    this.npcSpawns = built.npcSpawns;
+    this.disposables.push(...built.disposables);
+
+    this.mapBounds = built.mapBounds;
+    this.policeDeskPos = built.policeDeskPos ?? null;
+    this.holdingCellPos = built.holdingCellPos ?? null;
+    this.cellBailPos = built.cellBailPos ?? null;
+    this.cellReleasePos = built.cellReleasePos ?? null;
+    this.cellDoorMesh = built.cellDoorMesh ?? null;
+    this.cellDoorColliderIndex = built.cellDoorColliderIndex ?? -1;
+    this.airportDeskPos = built.airportDeskPos ?? null;
+    this.planeBoardPos = built.planeBoardPos ?? null;
+    this.supermarketCheckoutPos = built.supermarketCheckoutPos ?? null;
+    this.extraMissions = built.extraMissions ?? [];
+    for (const m of this.extraMissions) {
+      const done =
+        (m.id === 'bank_hack' && this.bankDataHacked) ||
+        (m.id === 'airport_briefcase' && this.airportBriefcaseRecovered) ||
+        (m.id === 'coast_smuggler' && this.coastPackageRecovered) ||
+        (m.id === 'sky_relay' && this.skyRelayHacked);
+      if (done) {
+        m.completed = true;
+        m.mesh.visible = false;
+        m.ringMesh.visible = false;
+      }
+    }
+    this.mapReturnPos = built.mapReturnPos ?? null;
+    this.oceanShoreZ = built.oceanShoreZ ?? null;
+    this.oceanWaterMesh = built.oceanWaterMesh ?? null;
+    if (this.oceanWaterMesh) {
+      const posAttr = this.oceanWaterMesh.geometry.attributes.position;
+      this.oceanBaseY = new Float32Array(posAttr.count);
+      for (let i = 0; i < posAttr.count; i++) {
+        this.oceanBaseY[i] = posAttr.getY(i);
+      }
+    } else {
+      this.oceanBaseY = null;
+    }
+    this.fallDeathY = built.fallDeathY ?? null;
+    this.prisonStations = built.prisonStations ?? null;
+    this.planeWalls = built.planeWalls ?? [];
+    this.planeCabinExplodeGroup = built.planeCabinExplodeGroup ?? null;
+
     this.scene.add(this.cityGroup);
+    this.spawnBirds();
+    this.openHoldingCellDoor(true);
+  }
+
+  private openHoldingCellDoor(open: boolean) {
+    if (this.cellDoorMesh) {
+      this.cellDoorMesh.rotation.y = open ? -Math.PI * 0.48 : 0;
+    }
+    if (this.cellDoorColliderIndex >= 0 && this.colliders[this.cellDoorColliderIndex]) {
+      this.colliders[this.cellDoorColliderIndex].height = open ? -1 : 3.2;
+    }
+  }
+
+  public switchMap(mapId: MapId, spawnPos?: THREE.Vector3) {
+    this.projectiles.forEach((p) => this.scene.remove(p.mesh));
+    this.projectiles = [];
+    this.debris.forEach((d) => this.scene.remove(d.mesh));
+    this.debris = [];
+    this.sound.setSupermarketMusic(false);
+
+    this.activeVehicle = null;
+    this.assassin.root.visible = true;
+    this.ticketKioskOpen = false;
+    this.policeMenuOpen = false;
+    this.supermarketOpen = false;
+    this.elevatorMenuOpen = false;
+    this.hotelRoomMenuOpen = false;
+    this.appearanceMenuOpen = false;
+    this.weaponWheelOpen = false;
+    this.lockpickMinigameOpen = false;
+    this.phoneOpen = false;
+    this.policeDispatch.active = false;
+    this.policeDispatch.stage = 'idle';
+    this.inHoldingCell = false;
+    this.fallPeakY = 0;
+
+    this.rebuildWorld(mapId);
+    this.spawnNpcs();
+
+    if (mapId !== 'plane_incident' && this.companionsRoster.length > 0) {
+      this.companionsRoster.forEach((c, idx) => {
+        const offset = new THREE.Vector3(2.0 + idx * 1.4, 0, 1.5);
+        const targetSpawn = (spawnPos ?? new THREE.Vector3(0, 0, 10)).clone().add(offset);
+        this.spawnCompanionNpc(c.id, c.name, c.voiceName, targetSpawn);
+      });
+    }
+
+    if (spawnPos) {
+      this.playerPos.copy(spawnPos);
+    } else if (mapId === 'coast') {
+      this.playerPos.set(0, 0, -4);
+      this.playerYaw = 0;
+      this.camYaw = Math.PI;
+    } else if (mapId === 'sky') {
+      this.playerPos.set(0, 0, 8);
+      this.playerYaw = Math.PI;
+      this.camYaw = 0;
+    } else if (mapId === 'prison') {
+      this.playerPos.set(-72, 0, -34);
+      this.playerYaw = Math.PI / 2;
+      this.camYaw = -Math.PI / 2;
+    } else if (mapId === 'plane_incident') {
+      this.playerPos.set(0, 0, 12.2);
+      this.playerYaw = Math.PI;
+      this.camYaw = 0;
+    } else {
+      this.playerPos.set(144, 0.14, 10);
+      this.playerYaw = -Math.PI / 2;
+      this.camYaw = Math.PI / 2;
+    }
+
+    this.playerVelY = 0;
+    this.fallPeakY = this.playerPos.y;
+    this.assassin.root.position.copy(this.playerPos);
+    this.assassin.root.rotation.y = this.playerYaw;
+    this.updateDynamicLights();
+    this.updateCamera(1.0);
+    this.emitSnapshot();
+  }
+
+  private spawnBirds() {
+    for (const b of this.birds) {
+      this.scene.remove(b.root);
+    }
+    this.birdDisposables.forEach((d) => d.dispose());
+    this.birdDisposables = [];
+    this.birds = [];
+
+    const bodyGeo = new THREE.BoxGeometry(0.14, 0.12, 0.28);
+    const beakGeo = new THREE.ConeGeometry(0.035, 0.1, 5);
+    beakGeo.rotateX(Math.PI / 2);
+    const wingGeo = new THREE.BoxGeometry(0.24, 0.025, 0.14);
+    const pigeonMat = new THREE.MeshStandardMaterial({ color: 0x64748b, roughness: 0.72 });
+    const gullMat = new THREE.MeshStandardMaterial({ color: 0xe2e8f0, roughness: 0.65 });
+    const beakMat = new THREE.MeshStandardMaterial({ color: 0xf59e0b, roughness: 0.5 });
+    this.birdDisposables.push(bodyGeo, beakGeo, wingGeo, pigeonMat, gullMat, beakMat);
+
+    const makeBird = (pos: THREE.Vector3, isSkyBird: boolean, index: number): BirdEntity => {
+      const root = new THREE.Group();
+      const mat = isSkyBird ? gullMat : pigeonMat;
+      const body = new THREE.Mesh(bodyGeo, mat);
+      const beak = new THREE.Mesh(beakGeo, beakMat);
+      beak.position.set(0, 0.02, 0.18);
+      root.add(body, beak);
+
+      const leftWingPivot = new THREE.Group();
+      leftWingPivot.position.set(-0.06, 0.04, 0);
+      const lw = new THREE.Mesh(wingGeo, mat);
+      lw.position.set(-0.12, 0, 0);
+      leftWingPivot.add(lw);
+
+      const rightWingPivot = new THREE.Group();
+      rightWingPivot.position.set(0.06, 0.04, 0);
+      const rw = new THREE.Mesh(wingGeo, mat);
+      rw.position.set(0.12, 0, 0);
+      rightWingPivot.add(rw);
+
+      root.add(leftWingPivot, rightWingPivot);
+      root.position.copy(pos);
+      root.rotation.y = index * 1.1;
+      this.scene.add(root);
+
+      return {
+        root,
+        leftWingPivot,
+        rightWingPivot,
+        perchPos: pos.clone(),
+        position: pos.clone(),
+        velocity: new THREE.Vector3(),
+        state: isSkyBird ? 'gliding' : 'perched',
+        flapPhase: index * 0.9,
+        timer: 1 + (index % 4),
+        isSkyBird,
+        orbitAngle: index * 1.4,
+        orbitRadius: 24 + (index % 4) * 14,
+      };
+    };
+
+    this.birdPerches.forEach((p, idx) => {
+      this.birds.push(makeBird(p.position, false, idx));
+    });
+    for (let s = 0; s < 4; s++) {
+      const ang = (s / 4) * Math.PI * 2;
+      this.birds.push(
+        makeBird(
+          new THREE.Vector3(Math.cos(ang) * 32, 18 + (s % 2) * 4, Math.sin(ang) * 32),
+          true,
+          20 + s,
+        ),
+      );
+    }
   }
 
   private spawnNpcs() {
@@ -702,9 +1054,67 @@ export class AssassinEngine {
         callTimer: 0,
         targetPosterId: null,
         posterHangTimer: 0,
+        isCompanion: false,
         disposed: false,
       });
     });
+  }
+
+  private spawnCompanionNpc(
+    id: string,
+    name: string,
+    voiceName: 'Charon' | 'Puck' | 'Kore' | 'Zephyr',
+    pos: THREE.Vector3,
+  ) {
+    const existing = this.npcs.find((n) => n.id === id && n.alertState !== 'eliminated');
+    if (existing) {
+      existing.isCompanion = true;
+      existing.alertState = 'patrol';
+      existing.disposed = false;
+      existing.rig.root.visible = true;
+      return existing;
+    }
+    const rig = createNpcRig('civilian', this.textures, 5);
+    rig.root.position.copy(pos);
+    this.scene.add(rig.root);
+    const companion: NpcEntity = {
+      id,
+      name: `${name} (Ally)`,
+      role: 'civilian',
+      voiceName,
+      isIndoorStore: false,
+      isBoutiqueResident: false,
+      isPosterWorker: false,
+      rig,
+      position: pos.clone(),
+      yaw: 0,
+      health: 120,
+      maxHealth: 120,
+      alertState: 'patrol',
+      alertTimer: 0,
+      attackCooldown: 0.6,
+      muzzleTimer: 0,
+      waypoints: [pos.clone()],
+      waypointIndex: 0,
+      lastKnownPlayerPos: null,
+      speechCooldown: 4,
+      walkPhase: 0,
+      deathTimer: 0,
+      ragdollSeed: 1,
+      ragdollFallDir: -1,
+      ragdollVel: new THREE.Vector3(),
+      suspicion: 0,
+      callTimer: 0,
+      targetPosterId: null,
+      posterHangTimer: 0,
+      punchCooldown: 0.5,
+      fightTimer: 0,
+      isDynamicSpawn: true,
+      isCompanion: true,
+      disposed: false,
+    };
+    this.npcs.push(companion);
+    return companion;
   }
 
   public setLanguage(lang: LanguageCode) {
@@ -751,6 +1161,7 @@ export class AssassinEngine {
     this.lockpickMinigameOpen = false;
     this.lockpickTarget = null;
     this.lockpickCar = null;
+    this.lockpickHouse = null;
     this.smashCar = null;
     this.smashWindowBroken = false;
     this.smashPainCried = false;
@@ -759,6 +1170,60 @@ export class AssassinEngine {
     this.hotelRoomMenuOpen = false;
     this.chosenHotelRoom = null;
     this.hotelHeistState = 'none';
+    this.elevatorMenuOpen = false;
+    this.elevatorRiding = false;
+    this.elevatorCurrentY = 0.14;
+    this.elevatorTargetY = 0.14;
+    this.elevatorDoorProgress = 1;
+    this.elevatorPhase = 'idle';
+
+    this.currentMap = 'city';
+    this.hasPlaneTicketTo = null;
+    this.ticketKioskOpen = false;
+    this.policeMenuOpen = false;
+    this.supermarketOpen = false;
+    this.sound.setSupermarketMusic(false);
+    this.armor = 0;
+    this.bankDataHacked = false;
+    this.airportBriefcaseRecovered = false;
+    this.coastPackageRecovered = false;
+    this.skyRelayHacked = false;
+    this.fallPeakY = 0;
+    this.fallPlungeStreetY = 0;
+    this.fallPlungeImpactX = 0;
+    this.fallPlungeImpactZ = 0;
+    this.fallPlungeIsCityHighDrop = false;
+    this.fallGoreSpawned = false;
+    this.arrestedFighters = [];
+    this.companionsRoster = [];
+    this.inHoldingCell = false;
+    this.prisonNeeds = { hunger: 82, energy: 86, hygiene: 82, strength: 15 };
+    this.prisonEscapeProgress = 0;
+    this.planeIntegrity = 100;
+    this.marshalThreatSpoken = false;
+    this.oceanDumpNpc = null;
+    this.oceanDumpSplashed = false;
+    this.arrestedTransferDone = false;
+    this.planeExploded = false;
+    this.planeCameraFrozen = false;
+
+    this.cash = 250;
+    this.hasWine = false;
+    this.wineDelivered = false;
+    this.suitRewardClaimed = false;
+    this.wineCinematicServed = false;
+    this.wineDeliveryRewarded = false;
+    this.drunkTimer = 0;
+    this.inGameMinutes = 21 * 60 + 35;
+    this.phoneOpen = false;
+    this.watchedVideoIds.clear();
+    this.revealedHouses.clear();
+    this.robbedHouses.clear();
+    this.oakDriveRecovered = false;
+    this.peopleHelped = 0;
+    this.helpedNpcIds.clear();
+    this.poorCelebrateTimer.clear();
+    this.assassin.handWeapons.wineBottle.visible = false;
     this.policeDispatch = {
       active: false,
       stage: 'idle',
@@ -801,7 +1266,7 @@ export class AssassinEngine {
     this.debris.forEach((d) => this.scene.remove(d.mesh));
     this.debris = [];
 
-    this.rebuildWorld();
+    this.rebuildWorld('city');
 
     this.assassin.root.visible = true;
     this.assassin.root.position.copy(this.playerPos);
@@ -818,6 +1283,7 @@ export class AssassinEngine {
         rigLimb.pivot.rotation.set(0, 0, 0);
         rigLimb.lowerPivot.rotation.set(0, 0, 0);
         rigLimb.growthRoot.rotation.set(0, 0, 0);
+        rigLimb.growthRoot.scale.set(1, 1, 1);
       }
       applyAnatomicalState(this.assassin, id, this.limbs[id], 0);
     });
@@ -842,6 +1308,11 @@ export class AssassinEngine {
         !this.appearanceMenuOpen &&
         !this.lockpickMinigameOpen &&
         !this.hotelRoomMenuOpen &&
+        !this.elevatorMenuOpen &&
+        !this.ticketKioskOpen &&
+        !this.policeMenuOpen &&
+        !this.supermarketOpen &&
+        !this.phoneOpen &&
         this.activeCinematic === 'none' &&
         !this.conversationActive &&
         document.pointerLockElement !== this.renderer.domElement
@@ -1024,7 +1495,250 @@ export class AssassinEngine {
     if (this.weaponWheelOpen) {
       this.weaponWheelOpen = false;
       this.sound.playSlowMo(false);
+    }
+    if (weapon === 'phone') {
+      this.togglePhone(true);
+      return;
+    }
+    this.requestPointerLock();
+    this.emitSnapshot();
+  }
+
+  public togglePhone(force?: boolean) {
+    if (
+      this.phase !== 'playing' ||
+      this.isRagdoll ||
+      this.conversationActive ||
+      this.activeCinematic !== 'none'
+    ) {
+      return;
+    }
+    const next = force !== undefined ? force : !this.phoneOpen;
+    if (next === this.phoneOpen) return;
+    this.phoneOpen = next;
+    this.keys.clear();
+    this.sound.playPhoneClick();
+    if (next) {
+      this.weaponWheelOpen = false;
+      this.appearanceMenuOpen = false;
+      this.hotelRoomMenuOpen = false;
+      this.elevatorMenuOpen = false;
+      this.equippedWeapon = 'phone';
+      setAssassinWeaponVisual(this.assassin, 'phone');
+      if (document.pointerLockElement) {
+        document.exitPointerLock?.();
+      }
+    } else {
+      if (this.equippedWeapon === 'phone') {
+        this.equippedWeapon = 'unarmed';
+        setAssassinWeaponVisual(this.assassin, 'unarmed');
+      }
       this.requestPointerLock();
+    }
+    this.emitSnapshot();
+  }
+
+  public watchPhoneVideo(videoId: string) {
+    this.watchedVideoIds.add(videoId);
+    this.sound.playPhoneClick();
+    if (videoId === 'vid_maple') this.revealedHouses.add('house_maple');
+    else if (videoId === 'vid_cedar') this.revealedHouses.add('house_cedar');
+    else if (videoId === 'vid_oak') this.revealedHouses.add('house_oak');
+    this.emitSnapshot();
+  }
+
+  public drinkWine() {
+    if (!this.hasWine || this.phase !== 'playing' || this.isRagdoll) return;
+    this.hasWine = false;
+    this.health = Math.min(this.maxHealth, this.health + 45);
+    this.stamina = 100;
+    this.drunkTimer = 18;
+    this.sound.playWinePour();
+    this.sound.speak('assassin_drink_wine', { force: true });
+    this.spawnBurst(
+      this.playerPos.clone().add(new THREE.Vector3(0, 1.35, 0)),
+      0x991b1b,
+      18,
+      2.6,
+    );
+    this.emitSnapshot();
+  }
+
+  public useHotelElevator(floor: HotelFloor) {
+    if (this.phase !== 'playing' || this.isRagdoll || this.elevatorRiding) return;
+    this.elevatorMenuOpen = false;
+    const targetY = this.hotelVex.floorY[floor - 1] ?? 0.14;
+    if (Math.abs(targetY - this.elevatorCurrentY) < 0.15) {
+      this.requestPointerLock();
+      this.emitSnapshot();
+      return;
+    }
+    this.elevatorTargetY = targetY;
+    this.elevatorRiding = true;
+    this.elevatorPhase = 'closing';
+    this.playerPos.set(
+      this.hotelVex.elevatorPos.x,
+      this.elevatorCurrentY,
+      this.hotelVex.elevatorPos.z,
+    );
+    this.playerVelY = 0;
+    this.keys.clear();
+    const estDur = Math.max(0.9, Math.abs(targetY - this.elevatorCurrentY) / 5.2);
+    this.sound.playElevatorRideHum(estDur);
+    this.requestPointerLock();
+    this.emitSnapshot();
+  }
+
+  public closeElevatorMenu() {
+    if (!this.elevatorMenuOpen) return;
+    this.elevatorMenuOpen = false;
+    this.requestPointerLock();
+    this.emitSnapshot();
+  }
+
+  public closeTicketKiosk() {
+    if (!this.ticketKioskOpen) return;
+    this.ticketKioskOpen = false;
+    this.requestPointerLock();
+    this.emitSnapshot();
+  }
+
+  public buyPlaneTicket(dest: 'coast' | 'sky') {
+    const cost = dest === 'coast' ? 250 : 400;
+    if (this.cash < cost) return;
+    this.cash -= cost;
+    this.hasPlaneTicketTo = dest;
+    this.ticketKioskOpen = false;
+    this.sound.playCoinChime();
+    this.sound.speak('airport_ticket', { force: true });
+    this.requestPointerLock();
+    this.emitSnapshot();
+  }
+
+  public closePoliceMenu() {
+    if (!this.policeMenuOpen) return;
+    this.policeMenuOpen = false;
+    this.requestPointerLock();
+    this.emitSnapshot();
+  }
+
+  public closeSupermarket() {
+    if (!this.supermarketOpen) return;
+    this.supermarketOpen = false;
+    this.requestPointerLock();
+    this.emitSnapshot();
+  }
+
+  public buySupermarketItem(itemId: ShopItemId) {
+    if (this.phase !== 'playing' || this.isRagdoll) return;
+    const item = UI_STRINGS[this.language].supermarketItems[itemId];
+    if (!item || this.cash < item.price) return;
+    this.cash -= item.price;
+
+    if (itemId === 'energy_drink') {
+      this.stamina = 100;
+      this.health = Math.min(this.maxHealth, this.health + 15);
+    } else if (itemId === 'bento_meal') {
+      this.health = Math.min(this.maxHealth, this.health + 45);
+      this.stamina = Math.min(100, this.stamina + 35);
+    } else if (itemId === 'medkit') {
+      this.health = this.maxHealth;
+      LIMB_IDS.forEach((id) => {
+        this.limbs[id] = { condition: 'intact', regenProgress: 0, stage: 'none' };
+        applyAnatomicalState(this.assassin, id, this.limbs[id], this.totalTime);
+      });
+    } else if (itemId === 'kevlar_vest') {
+      this.armor = 100;
+    } else if (itemId === 'ammo_lockpick') {
+      this.kunaiCooldown = 0;
+      this.equippedWeapon = 'lockpick';
+      setAssassinWeaponVisual(this.assassin, 'lockpick');
+    }
+
+    this.sound.playCashRegister();
+    this.sound.speak('shop_buy_thanks', { force: true });
+    this.spawnBurst(
+      this.playerPos.clone().add(new THREE.Vector3(0, 1.25, 0)),
+      0x10b981,
+      14,
+      2.2,
+    );
+    this.emitSnapshot();
+  }
+
+  public payFighterBail(fighterId: string) {
+    const idx = this.arrestedFighters.findIndex((f) => f.id === fighterId);
+    if (idx < 0) return;
+    const fighter = this.arrestedFighters[idx];
+    if (this.cash < fighter.bailCost) return;
+    this.cash -= fighter.bailCost;
+    this.arrestedFighters.splice(idx, 1);
+
+    const compId = `ally_${fighter.id}`;
+    const namesVoice: 'Charon' | 'Puck' = 'Puck';
+    this.companionsRoster.push({ id: compId, name: fighter.name, voiceName: namesVoice });
+    const spawnPos = this.playerPos.clone().add(new THREE.Vector3(1.8, 0, 1.4));
+    const ally = this.spawnCompanionNpc(compId, fighter.name, namesVoice, spawnPos);
+    this.sound.playCoinChime();
+    this.speakNpc(ally, 'bail_companion_thanks');
+    this.spawnBurst(spawnPos.clone().add(new THREE.Vector3(0, 1.2, 0)), 0x10b981, 18, 2.8);
+    this.emitSnapshot();
+  }
+
+  public surrenderToPolice() {
+    if (
+      this.phase !== 'playing' ||
+      this.isRagdoll ||
+      this.wantedLevel < 1 ||
+      this.currentMap === 'prison' ||
+      this.currentMap === 'plane_incident' ||
+      this.inHoldingCell ||
+      this.activeCinematic !== 'none'
+    ) {
+      return;
+    }
+    this.arrestPlayer();
+  }
+
+  private arrestPlayer() {
+    if (this.activeCinematic === 'arrested_transfer' || this.inHoldingCell) return;
+    if (this.activeVehicle) {
+      this.activeVehicle.speed = 0;
+      this.activeVehicle = null;
+      this.assassin.root.visible = true;
+    }
+    this.arrestedTargetWanted = Math.max(1, this.wantedLevel);
+    this.arrestedTransferDone = false;
+    this.activeCinematic = 'arrested_transfer';
+    this.cinematicTimer = 0;
+    this.keys.clear();
+    this.weaponWheelOpen = false;
+    this.appearanceMenuOpen = false;
+    this.policeMenuOpen = false;
+    this.ticketKioskOpen = false;
+    this.sound.playPoliceSiren();
+    if (document.pointerLockElement) {
+      document.exitPointerLock?.();
+    }
+    this.emitSnapshot();
+  }
+
+  public payHoldingCellBail() {
+    if (!this.inHoldingCell) return;
+    const cost = Math.min(this.cash, this.holdingCellBail);
+    this.cash -= cost;
+    this.inHoldingCell = false;
+    this.wantedLevel = 0;
+    this.openHoldingCellDoor(true);
+    if (this.cellReleasePos) {
+      this.playerPos.copy(this.cellReleasePos);
+      this.assassin.root.position.copy(this.playerPos);
+    }
+    this.sound.playCoinChime();
+    for (const n of this.npcs) {
+      if (n.role === 'police' && n.alertState === 'combat') {
+        n.alertState = 'patrol';
+      }
     }
     this.emitSnapshot();
   }
@@ -1113,9 +1827,11 @@ export class AssassinEngine {
   public completeLockpickMinigame(success: boolean) {
     const target = this.lockpickTarget;
     const car = this.lockpickCar;
+    const house = this.lockpickHouse;
     this.lockpickMinigameOpen = false;
     this.lockpickTarget = null;
     this.lockpickCar = null;
+    this.lockpickHouse = null;
     if (!success) {
       this.requestPointerLock();
       this.emitSnapshot();
@@ -1123,6 +1839,13 @@ export class AssassinEngine {
     }
     if (target === 'hotel_204') {
       this.unlockHotelDoor(this.hotelVex.suite204Door, -1);
+      this.sound.playCarUnlock();
+      this.requestPointerLock();
+      this.emitSnapshot();
+      return;
+    }
+    if (target === 'house' && house) {
+      this.unlockHouseDoor(house, false);
       this.sound.playCarUnlock();
       this.requestPointerLock();
       this.emitSnapshot();
@@ -1147,6 +1870,7 @@ export class AssassinEngine {
     this.lockpickMinigameOpen = false;
     this.lockpickTarget = null;
     this.lockpickCar = null;
+    this.lockpickHouse = null;
     this.requestPointerLock();
     this.emitSnapshot();
   }
@@ -1154,11 +1878,17 @@ export class AssassinEngine {
   public triggerSmashFromMinigame() {
     const target = this.lockpickTarget;
     const car = this.lockpickCar;
+    const house = this.lockpickHouse;
     this.lockpickMinigameOpen = false;
     this.lockpickTarget = null;
     this.lockpickCar = null;
+    this.lockpickHouse = null;
     if (target === 'hotel_204') {
       this.forceSuite204Door();
+      this.requestPointerLock();
+      this.emitSnapshot();
+    } else if (target === 'house' && house) {
+      this.unlockHouseDoor(house, true);
       this.requestPointerLock();
       this.emitSnapshot();
     } else if (car) {
@@ -1166,6 +1896,24 @@ export class AssassinEngine {
     } else {
       this.requestPointerLock();
       this.emitSnapshot();
+    }
+  }
+
+  private unlockHouseDoor(house: HouseSpec, noisy: boolean) {
+    if (house.unlocked) return;
+    house.unlocked = true;
+    house.lockLedMat.color.setHex(0x10b981);
+    house.doorPivot.rotation.y = Math.PI * 0.48;
+    const col = this.colliders[house.colliderIndex];
+    if (col) col.height = -1;
+    if (noisy) {
+      this.sound.playMetalCrash(0.48);
+      this.spawnBurst(
+        house.doorPos.clone().add(new THREE.Vector3(0, 1.1, 0)),
+        0xfbbf24,
+        14,
+        2.8,
+      );
     }
   }
 
@@ -1251,7 +1999,11 @@ export class AssassinEngine {
     const voiceRole =
       npc.role === 'target'
         ? 'target'
-        : npc.role === 'civilian' || npc.role === 'clerk'
+        : npc.role === 'civilian' ||
+            npc.role === 'clerk' ||
+            npc.role === 'collector' ||
+            npc.role === 'poor' ||
+            npc.role === 'gentleman'
           ? 'civilian'
           : 'guard';
 
@@ -1588,6 +2340,7 @@ export class AssassinEngine {
       this.appearanceMenuOpen ||
       this.lockpickMinigameOpen ||
       this.hotelRoomMenuOpen ||
+      this.supermarketOpen ||
       this.activeCinematic !== 'none' ||
       this.conversationActive
     ) {
@@ -1618,6 +2371,7 @@ export class AssassinEngine {
       this.appearanceMenuOpen ||
       this.lockpickMinigameOpen ||
       this.hotelRoomMenuOpen ||
+      this.supermarketOpen ||
       this.activeCinematic !== 'none' ||
       this.conversationActive
     ) {
@@ -1675,6 +2429,53 @@ export class AssassinEngine {
 
     if (this.activeCinematic !== 'none') return;
 
+    if (this.phoneOpen) {
+      if (e.code === 'Escape' || e.code === 'KeyP') {
+        this.togglePhone(false);
+      }
+      return;
+    }
+
+    if (this.elevatorMenuOpen) {
+      if (e.code === 'Escape') {
+        this.closeElevatorMenu();
+      } else if (e.code === 'Digit1') {
+        this.useHotelElevator(1);
+      } else if (e.code === 'Digit2') {
+        this.useHotelElevator(2);
+      } else if (e.code === 'Digit3') {
+        this.useHotelElevator(3);
+      } else if (e.code === 'Digit4') {
+        this.useHotelElevator(4);
+      } else if (e.code === 'Digit5') {
+        this.useHotelElevator(5);
+      } else if (e.code === 'Digit6') {
+        this.useHotelElevator(6);
+      }
+      return;
+    }
+
+    if (this.ticketKioskOpen) {
+      if (e.code === 'Escape') {
+        this.closeTicketKiosk();
+      }
+      return;
+    }
+
+    if (this.policeMenuOpen) {
+      if (e.code === 'Escape') {
+        this.closePoliceMenu();
+      }
+      return;
+    }
+
+    if (this.supermarketOpen) {
+      if (e.code === 'Escape') {
+        this.closeSupermarket();
+      }
+      return;
+    }
+
     if (this.hotelRoomMenuOpen) {
       if (e.code === 'Escape') {
         this.closeHotelRoomMenu();
@@ -1695,6 +2496,23 @@ export class AssassinEngine {
       return;
     }
 
+    if (e.code === 'KeyP' && !this.activeVehicle) {
+      e.preventDefault();
+      this.togglePhone();
+      return;
+    }
+
+    if (e.code === 'KeyJ' && this.wantedLevel >= 1) {
+      e.preventDefault();
+      this.surrenderToPolice();
+      return;
+    }
+
+    if (e.code === 'KeyU' && this.hasWine) {
+      this.drinkWine();
+      return;
+    }
+
     if (this.weaponWheelOpen) {
       if (e.code === 'Digit1') this.setWeapon('unarmed');
       else if (e.code === 'Digit2') this.setWeapon('blades');
@@ -1702,6 +2520,7 @@ export class AssassinEngine {
       else if (e.code === 'Digit4') this.setWeapon('pistol');
       else if (e.code === 'Digit5') this.setWeapon('shotgun');
       else if (e.code === 'Digit6') this.setWeapon('lockpick');
+      else if (e.code === 'Digit7') this.setWeapon('phone');
       else if (e.code === 'Escape') this.toggleWeaponWheel(false);
       return;
     }
@@ -1736,7 +2555,7 @@ export class AssassinEngine {
 
     if (this.activeVehicle) return;
 
-    const floorY = this.getGroundHeightAt(this.playerPos.x, this.playerPos.z);
+    const floorY = this.getGroundHeightAt(this.playerPos.x, this.playerPos.z, this.playerPos.y);
     if (e.code === 'KeyC' || e.code === 'ControlLeft') {
       this.crouchToggled = !this.crouchToggled;
     } else if (e.code === 'KeyF') {
@@ -1807,10 +2626,331 @@ export class AssassinEngine {
     this.emitSnapshot();
   }
 
+  private getOceanDumpCandidate(): NpcEntity | null {
+    if (this.currentMap !== 'coast' || this.oceanShoreZ === null || this.activeVehicle) {
+      return null;
+    }
+    for (const n of this.npcs) {
+      if (n.alertState !== 'eliminated' || n.disposed) continue;
+      if (
+        n.position.distanceTo(this.playerPos) < 3.4 &&
+        n.position.z >= this.oceanShoreZ - 20
+      ) {
+        return n;
+      }
+    }
+    return null;
+  }
+
   private handleInteractKey() {
     if (this.activeVehicle) {
       this.toggleVehicleEntry();
       return;
+    }
+
+    // Police Holding Cell Bail Terminal
+    if (
+      this.inHoldingCell &&
+      this.cellBailPos &&
+      this.playerPos.distanceTo(this.cellBailPos) < 3.2
+    ) {
+      this.payHoldingCellBail();
+      return;
+    }
+
+    // Police Precinct Booking Desk (Bail companions from street fights!)
+    if (
+      this.policeDeskPos &&
+      !this.inHoldingCell &&
+      this.playerPos.distanceTo(this.policeDeskPos) < 3.6
+    ) {
+      this.policeMenuOpen = true;
+      this.keys.clear();
+      this.weaponWheelOpen = false;
+      if (document.pointerLockElement) {
+        document.exitPointerLock?.();
+      }
+      this.emitSnapshot();
+      return;
+    }
+
+    // 24H SuperMart Checkout Counter
+    if (
+      this.supermarketCheckoutPos &&
+      this.playerPos.distanceTo(this.supermarketCheckoutPos) < 3.4
+    ) {
+      this.supermarketOpen = true;
+      this.keys.clear();
+      this.weaponWheelOpen = false;
+      this.sound.playElevatorDing();
+      if (document.pointerLockElement) {
+        document.exitPointerLock?.();
+      }
+      this.emitSnapshot();
+      return;
+    }
+
+    // Extra World Missions (Meridian Bank Hack, Airport Hangar Case, Coast Pier Crate, Sky Observatory Relay)
+    const nearExtra = this.extraMissions.find(
+      (m) => !m.completed && this.playerPos.distanceTo(m.pos) < 3.2,
+    );
+    if (nearExtra) {
+      nearExtra.completed = true;
+      nearExtra.mesh.visible = false;
+      nearExtra.ringMesh.visible = false;
+      this.cash += nearExtra.rewardCash;
+      if (nearExtra.id === 'bank_hack') this.bankDataHacked = true;
+      else if (nearExtra.id === 'airport_briefcase') this.airportBriefcaseRecovered = true;
+      else if (nearExtra.id === 'coast_smuggler') this.coastPackageRecovered = true;
+      else if (nearExtra.id === 'sky_relay') this.skyRelayHacked = true;
+      this.sound.playHeistPickup();
+      this.sound.speak('mission_complete_voice', { force: true });
+      this.spawnBurst(nearExtra.pos.clone().add(new THREE.Vector3(0, 1.0, 0)), 0x38bdf8, 24, 3.6);
+      this.emitSnapshot();
+      return;
+    }
+
+    // Airport Ticket Kiosk (Buy ticket to Coast or Sky City)
+    if (this.airportDeskPos && this.playerPos.distanceTo(this.airportDeskPos) < 3.6) {
+      this.ticketKioskOpen = true;
+      this.keys.clear();
+      this.weaponWheelOpen = false;
+      if (document.pointerLockElement) {
+        document.exitPointerLock?.();
+      }
+      this.emitSnapshot();
+      return;
+    }
+
+    // Airport Gate Boarding Stairs (Wanted level triggers Flight 409 incident!)
+    if (this.planeBoardPos && this.playerPos.distanceTo(this.planeBoardPos) < 4.0) {
+      if (this.wantedLevel > 0) {
+        this.sound.playJetFlyover();
+        this.switchMap('plane_incident');
+        this.activeCinematic = 'plane_threat';
+        this.cinematicTimer = 0;
+        this.planeIntegrity = 100;
+        this.marshalThreatSpoken = false;
+        this.equippedWeapon = 'pistol';
+        setAssassinWeaponVisual(this.assassin, 'pistol');
+        this.emitSnapshot();
+      } else if (this.hasPlaneTicketTo) {
+        const dest = this.hasPlaneTicketTo;
+        this.hasPlaneTicketTo = null;
+        this.sound.playJetFlyover();
+        this.switchMap(dest);
+      } else {
+        this.ticketKioskOpen = true;
+        this.keys.clear();
+        if (document.pointerLockElement) {
+          document.exitPointerLock?.();
+        }
+        this.emitSnapshot();
+      }
+      return;
+    }
+
+    // Coast / Sky Return Charter Flight ($150, or $0 if returning cleanly)
+    if (this.mapReturnPos && this.playerPos.distanceTo(this.mapReturnPos) < 3.8) {
+      if (this.wantedLevel > 0) {
+        this.sound.playJetFlyover();
+        this.switchMap('plane_incident');
+        this.activeCinematic = 'plane_threat';
+        this.cinematicTimer = 0;
+        this.planeIntegrity = 100;
+        this.marshalThreatSpoken = false;
+        this.equippedWeapon = 'pistol';
+        setAssassinWeaponVisual(this.assassin, 'pistol');
+        this.emitSnapshot();
+      } else {
+        const fare = Math.min(this.cash, 150);
+        this.cash -= fare;
+        this.sound.playJetFlyover();
+        this.switchMap('city', new THREE.Vector3(144, 0.14, 10));
+      }
+      return;
+    }
+
+    // Coast Ocean Body Disposal near Beach / Shore
+    const dumpCandidate = this.getOceanDumpCandidate();
+    if (dumpCandidate) {
+      this.oceanDumpNpc = dumpCandidate;
+      this.oceanDumpStartPos.copy(dumpCandidate.position);
+      this.oceanDumpSplashed = false;
+      this.activeCinematic = 'ocean_dump';
+      this.cinematicTimer = 0;
+      this.keys.clear();
+      this.emitSnapshot();
+      return;
+    }
+
+    // Prison Needs & Escape Stations
+    if (this.currentMap === 'prison' && this.prisonStations) {
+      const ps = this.prisonStations;
+      if (this.playerPos.distanceTo(ps.eatPos) < 3.2) {
+        this.prisonNeeds.hunger = 100;
+        this.prisonNeeds.energy = Math.min(100, this.prisonNeeds.energy + 8);
+        this.health = Math.min(this.maxHealth, this.health + 18);
+        this.sound.playHeistPickup();
+        this.spawnBurst(ps.eatPos.clone().add(new THREE.Vector3(0, 1.1, 0)), 0x10b981, 12, 2.2);
+        this.emitSnapshot();
+        return;
+      }
+      if (this.playerPos.distanceTo(ps.trainPos) < 3.2) {
+        this.prisonNeeds.strength = Math.min(100, this.prisonNeeds.strength + 18);
+        this.prisonNeeds.energy = Math.max(0, this.prisonNeeds.energy - 12);
+        this.prisonNeeds.hygiene = Math.max(0, this.prisonNeeds.hygiene - 10);
+        this.sound.playWeightClang();
+        this.spawnBurst(ps.trainPos.clone().add(new THREE.Vector3(0, 1.0, 0)), 0xf59e0b, 14, 2.5);
+        this.emitSnapshot();
+        return;
+      }
+      if (this.playerPos.distanceTo(ps.restroomPos) < 3.0) {
+        this.prisonNeeds.hygiene = 100;
+        this.sound.playWaterSplash();
+        this.spawnBurst(ps.restroomPos.clone().add(new THREE.Vector3(0, 1.0, 0)), 0x38bdf8, 14, 2.2);
+        this.emitSnapshot();
+        return;
+      }
+      if (this.playerPos.distanceTo(ps.sleepPos) < 3.2) {
+        this.prisonNeeds.energy = 100;
+        this.health = this.maxHealth;
+        this.inGameMinutes = (this.inGameMinutes + 360) % (24 * 60);
+        this.sound.playHotelChime();
+        this.spawnBurst(ps.sleepPos.clone().add(new THREE.Vector3(0, 1.0, 0)), 0x818cf8, 14, 2.0);
+        this.emitSnapshot();
+        return;
+      }
+      if (this.playerPos.distanceTo(ps.escapePos) < 3.0) {
+        const gain = this.equippedWeapon === 'lockpick' ? 50 : 34;
+        this.prisonEscapeProgress = Math.min(100, this.prisonEscapeProgress + gain);
+        this.sound.playMetalCrash(0.5);
+        this.spawnBurst(ps.escapePos.clone().add(new THREE.Vector3(0, 0.4, 0)), 0xfbbf24, 16, 2.8);
+        if (this.prisonEscapeProgress >= 100) {
+          this.prisonEscapeProgress = 0;
+          this.sound.playPrisonBuzzer();
+          this.sound.speak('prison_escape', { force: true });
+          this.switchMap('city', new THREE.Vector3(84, 0, 86));
+          this.wantedLevel = 2;
+        }
+        this.emitSnapshot();
+        return;
+      }
+    }
+
+    // 0a. Hotel Vex Glass Elevator (1F .. 6F)
+    const elevDx = this.playerPos.x - this.hotelVex.elevatorPos.x;
+    const elevDz = this.playerPos.z - this.hotelVex.elevatorPos.z;
+    if (!this.elevatorRiding && Math.hypot(elevDx, elevDz) < 2.6) {
+      this.elevatorMenuOpen = true;
+      this.keys.clear();
+      this.weaponWheelOpen = false;
+      this.sound.playElevatorDing();
+      if (document.pointerLockElement) {
+        document.exitPointerLock?.();
+      }
+      this.emitSnapshot();
+      return;
+    }
+
+    // 0b. Bar Wine Serving Cinematic at 24H Neon Lounge Counter
+    if (
+      !this.hasWine &&
+      !this.wineDelivered &&
+      this.playerPos.distanceTo(this.barWinePos) < 3.4
+    ) {
+      this.startBarWineCinematic();
+      return;
+    }
+
+    // 0c. Elegant House Ravenscroft Villa — Deliver Wine or Speak with Gentleman in Suit
+    const gentleman = this.npcs.find((n) => n.role === 'gentleman' && n.alertState !== 'eliminated');
+    if (
+      gentleman &&
+      (this.playerPos.distanceTo(gentleman.position) < 3.4 ||
+        this.playerPos.distanceTo(this.villaTablePos) < 3.0)
+    ) {
+      if (this.hasWine && !this.wineDelivered) {
+        this.startDeliverWineCinematic();
+      } else {
+        this.speakNpc(gentleman, this.wineDelivered ? 'suit_man_greet' : 'suit_man_no_wine');
+      }
+      return;
+    }
+
+    // 0d. Give $50 to a struggling Citizen (poor NPC)
+    const poorNear = this.npcs.find(
+      (n) =>
+        n.role === 'poor' &&
+        n.alertState !== 'eliminated' &&
+        !this.helpedNpcIds.has(n.id) &&
+        n.position.distanceTo(this.playerPos) < 3.0,
+    );
+    if (poorNear) {
+      if (this.cash >= 50) {
+        this.cash -= 50;
+        this.helpedNpcIds.add(poorNear.id);
+        this.peopleHelped += 1;
+        this.poorCelebrateTimer.set(poorNear.id, 3.2);
+        this.sound.playCoinChime();
+        this.speakNpc(poorNear, this.peopleHelped % 2 === 1 ? 'poor_grateful_1' : 'poor_grateful_2');
+        this.spawnBurst(
+          poorNear.position.clone().add(new THREE.Vector3(0, 1.35, 0)),
+          0x10b981,
+          16,
+          2.6,
+        );
+        this.emitSnapshot();
+      } else {
+        this.speakNpc(poorNear, 'poor_beg_1');
+      }
+      return;
+    }
+
+    // 0e. Residential Houses: Oak Drive Side Mission, Stealable Safes, & Lockpick/Force Doors
+    for (const h of this.houses) {
+      if (
+        h.sideItemPos &&
+        !h.sideItemDone &&
+        this.playerPos.distanceTo(h.sideItemPos) < 2.6
+      ) {
+        h.sideItemDone = true;
+        if (h.sideItemMesh) h.sideItemMesh.visible = false;
+        this.oakDriveRecovered = true;
+        this.cash += 400;
+        this.sound.playHeistPickup();
+        this.sound.speak('side_mission_done', { force: true });
+        this.spawnBurst(h.sideItemPos.clone(), 0x38bdf8, 22, 3.4);
+        this.emitSnapshot();
+        return;
+      }
+      if (!h.robbed && h.unlocked && this.playerPos.distanceTo(h.safePos) < 2.6) {
+        h.robbed = true;
+        this.robbedHouses.add(h.id);
+        this.cash += h.lootCash;
+        this.sound.playCoinChime();
+        this.sound.speak('burglary_loot', { force: true });
+        this.spawnBurst(h.safePos.clone(), 0xfbbf24, 22, 3.4);
+        this.emitSnapshot();
+        return;
+      }
+      if (!h.unlocked && this.playerPos.distanceTo(h.doorPos) < 2.8) {
+        if (this.equippedWeapon === 'lockpick') {
+          this.lockpickTarget = 'house';
+          this.lockpickHouse = h;
+          this.lockpickCar = null;
+          this.lockpickMinigameOpen = true;
+          this.keys.clear();
+          if (document.pointerLockElement) {
+            document.exitPointerLock?.();
+          }
+          this.emitSnapshot();
+        } else {
+          this.unlockHouseDoor(h, true);
+          this.emitSnapshot();
+        }
+        return;
+      }
     }
 
     // 1. Steal Encrypted Obsidian Ledger in Suite 204
@@ -1822,6 +2962,7 @@ export class AssassinEngine {
       this.hotelVex.ledgerStolen = true;
       this.hotelVex.ledgerMesh.visible = false;
       this.hotelHeistState = 'completed';
+      this.cash += 500;
       this.sound.playHeistPickup();
       this.sound.speak('assassin_heist_done', { force: true });
       this.spawnBurst(this.hotelVex.ledgerPos.clone(), 0x10b981, 24, 3.6);
@@ -1878,7 +3019,7 @@ export class AssassinEngine {
     }
 
     // 4. Hotel Vex Front Desk check-in / change suite
-    if (this.playerPos.distanceTo(this.hotelVex.deskPos) < 4.0) {
+    if (this.playerPos.y < 3.5 && this.playerPos.distanceTo(this.hotelVex.deskPos) < 4.0) {
       if (!this.hotelCheckinDone) {
         this.startHotelCheckinCinematic();
       } else {
@@ -1893,6 +3034,43 @@ export class AssassinEngine {
     }
 
     this.toggleVehicleEntry();
+  }
+
+  private startBarWineCinematic() {
+    this.activeCinematic = 'bar_wine_serve';
+    this.cinematicTimer = 0;
+    this.wineCinematicServed = false;
+    this.crouchToggled = false;
+    this.keys.clear();
+    this.weaponWheelOpen = false;
+    this.appearanceMenuOpen = false;
+    setAssassinWeaponVisual(this.assassin, 'unarmed');
+    if (document.pointerLockElement) {
+      document.exitPointerLock?.();
+    }
+    const bartender = this.npcs.find((n) => n.id === 'clerk_lounge');
+    if (bartender) {
+      this.speakNpc(bartender, 'bartender_serve_wine');
+    } else {
+      this.sound.speak('bartender_serve_wine', { force: true });
+    }
+    this.emitSnapshot();
+  }
+
+  private startDeliverWineCinematic() {
+    this.activeCinematic = 'deliver_wine';
+    this.cinematicTimer = 0;
+    this.wineDeliveryRewarded = false;
+    this.crouchToggled = false;
+    this.keys.clear();
+    this.weaponWheelOpen = false;
+    this.appearanceMenuOpen = false;
+    setAssassinWeaponVisual(this.assassin, 'unarmed');
+    this.assassin.handWeapons.wineBottle.visible = true;
+    if (document.pointerLockElement) {
+      document.exitPointerLock?.();
+    }
+    this.emitSnapshot();
   }
 
   private startHotelCheckinCinematic() {
@@ -1995,8 +3173,11 @@ export class AssassinEngine {
     };
   }
 
-  private getGroundHeightAt(x: number, z: number): number {
-    let bestY = 0;
+  private getGroundHeightAt(x: number, z: number, refY = this.playerPos.y): number {
+    let bestY = this.currentMap === 'sky' ? -45 : 0;
+    if (this.currentMap === 'coast' && this.oceanShoreZ !== null && z > this.oceanShoreZ + 2) {
+      bestY = -0.22;
+    }
     for (const w of this.walkables) {
       if (x >= w.minX && x <= w.maxX && z >= w.minZ && z <= w.maxZ) {
         let y = w.yStart;
@@ -2007,13 +3188,36 @@ export class AssassinEngine {
           const t = (x - w.minX) / Math.max(0.001, w.maxX - w.minX);
           y = THREE.MathUtils.lerp(w.yStart, w.yEnd, t);
         }
-        if (y > bestY) bestY = y;
+        if (y <= refY + 1.15 && y > bestY) bestY = y;
       }
     }
     return bestY;
   }
 
+  private getHotelFloor(): HotelFloor {
+    if (this.playerPos.y >= 22.8) return 6;
+    if (this.playerPos.y >= 18.0) return 5;
+    if (this.playerPos.y >= 13.2) return 4;
+    if (this.playerPos.y >= 8.4) return 3;
+    if (this.playerPos.y >= 3.8) return 2;
+    return 1;
+  }
+
   private getCurrentZoneName(): string {
+    if (
+      this.currentMap === 'city' &&
+      this.playerPos.x >= -38 &&
+      this.playerPos.x <= -14 &&
+      this.playerPos.z >= -100 &&
+      this.playerPos.z <= -69
+    ) {
+      const f = this.getHotelFloor();
+      if (f === 6) return 'Hotel Vex 6F Helipad Rooftop';
+      if (f === 5) return 'Hotel Vex 5F Observatory Lounge';
+      if (f === 4) return 'Hotel Vex 4F VIP Penthouses';
+      if (f === 3) return 'Hotel Vex 3F Sky Lounge & Gym';
+      if (f === 2) return 'Hotel Vex 2F Executive Suites';
+    }
     for (const z of this.zones) {
       if (
         this.playerPos.x >= z.minX &&
@@ -2024,6 +3228,10 @@ export class AssassinEngine {
         return z.name;
       }
     }
+    if (this.currentMap === 'coast') return 'Solstice Coastline';
+    if (this.currentMap === 'sky') return 'Aether Sky City';
+    if (this.currentMap === 'prison') return 'Blackrock Federal Prison';
+    if (this.currentMap === 'plane_incident') return 'Flight 409 · Cabin';
     return 'Outer City Boulevard';
   }
 
@@ -2133,12 +3341,33 @@ export class AssassinEngine {
       return;
     }
 
+    if (this.equippedWeapon === 'phone') {
+      this.togglePhone(true);
+      return;
+    }
+
     if (this.equippedWeapon === 'lockpick') {
       if (
         !this.hotelVex.suite204Door.unlocked &&
         this.playerPos.distanceTo(this.hotelVex.suite204Door.doorPos) < 2.8
       ) {
         this.lockpickTarget = 'hotel_204';
+        this.lockpickCar = null;
+        this.lockpickHouse = null;
+        this.lockpickMinigameOpen = true;
+        this.keys.clear();
+        if (document.pointerLockElement) {
+          document.exitPointerLock?.();
+        }
+        this.emitSnapshot();
+        return;
+      }
+      const nearHouse = this.houses.find(
+        (h) => !h.unlocked && this.playerPos.distanceTo(h.doorPos) < 2.8,
+      );
+      if (nearHouse) {
+        this.lockpickTarget = 'house';
+        this.lockpickHouse = nearHouse;
         this.lockpickCar = null;
         this.lockpickMinigameOpen = true;
         this.keys.clear();
@@ -2155,6 +3384,7 @@ export class AssassinEngine {
         nearCar.driverModel.visible = false;
         this.lockpickTarget = 'car';
         this.lockpickCar = nearCar;
+        this.lockpickHouse = null;
         this.lockpickMinigameOpen = true;
         this.keys.clear();
         if (document.pointerLockElement) {
@@ -2205,8 +3435,12 @@ export class AssassinEngine {
       0,
       Math.cos(this.playerYaw),
     );
-    const dmg =
-      this.equippedWeapon === 'unarmed' ? 26 : bothArmsSevered ? 24 : 52;
+    const prisonStrengthBonus =
+      this.currentMap === 'prison' ? 1 + (this.prisonNeeds.strength / 100) * 0.8 : 1;
+    const dmg = Math.round(
+      (this.equippedWeapon === 'unarmed' ? 26 : bothArmsSevered ? 24 : 52) *
+        prisonStrengthBonus,
+    );
 
     // Check melee shattering nearby storefront glass or parked car glass!
     for (const glass of this.destructibleGlass) {
@@ -2253,13 +3487,14 @@ export class AssassinEngine {
 
     if (isShotgun) {
       this.sound.playShotgunBlast(0);
+      this.startleNearbyBirds(this.playerPos, 24);
       // Loud gunfire alerts nearby NPCs to sound without granting wanted stars (rain muffles range)
       const shotHearingRadius = 28 * WEATHER_CONFIGS[this.weather].hearingMult;
       for (const npc of this.npcs) {
         if (npc.alertState === 'eliminated') continue;
         const dist = npc.position.distanceTo(this.playerPos);
         if (dist > shotHearingRadius) continue;
-        if (npc.role === 'civilian' && npc.alertState !== 'fleeing') {
+        if ((npc.role === 'civilian' || npc.role === 'collector' || npc.role === 'poor') && npc.alertState !== 'fleeing') {
           npc.alertState = 'fleeing';
           npc.alertTimer = 14;
         } else if (
@@ -2294,13 +3529,14 @@ export class AssassinEngine {
       mesh.position.copy(origin);
       this.scene.add(mesh);
 
+      const weaponBonus = this.suitRewardClaimed ? 1.35 : 1.0;
       this.projectiles.push({
         mesh,
         position: origin.clone(),
         velocity: dir.multiplyScalar(isShotgun ? 44 : 52),
         fromPlayer: true,
         isSilent: !isShotgun,
-        damage: isShotgun ? 34 : 58,
+        damage: Math.round((isShotgun ? 34 : 58) * weaponBonus),
         life: isShotgun ? 0.9 : 1.6,
       });
     }
@@ -2540,17 +3776,28 @@ export class AssassinEngine {
       );
     }
 
+    const totalTargets = this.npcs.filter((n) => n.role === 'target').length;
     const targetsAlive = this.npcs.filter(
       (n) => n.role === 'target' && n.alertState !== 'eliminated',
     ).length;
 
-    if (targetsAlive === 0) {
+    if (totalTargets > 0 && targetsAlive === 0) {
       this.phase = 'victory';
       this.sound.speak('assassin_victory', { force: true });
       if (document.pointerLockElement) {
         document.exitPointerLock?.();
       }
       this.emitSnapshot();
+    } else if (this.currentMap === 'plane_incident') {
+      const marshalsAlive = this.npcs.filter(
+        (n) => n.role === 'marshal' && n.alertState !== 'eliminated',
+      ).length;
+      if (marshalsAlive === 0) {
+        this.wantedLevel = 0;
+        this.hasPlaneTicketTo = null;
+        this.sound.playJetFlyover();
+        this.switchMap('city', new THREE.Vector3(140, 0.14, 14));
+      }
     }
   }
 
@@ -2596,8 +3843,8 @@ export class AssassinEngine {
     const prevX = pos.x;
     const prevZ = pos.z;
 
-    pos.x = THREE.MathUtils.clamp(pos.x, -114, 114);
-    pos.z = THREE.MathUtils.clamp(pos.z, -114, 114);
+    pos.x = THREE.MathUtils.clamp(pos.x, this.mapBounds.minX, this.mapBounds.maxX);
+    pos.z = THREE.MathUtils.clamp(pos.z, this.mapBounds.minZ, this.mapBounds.maxZ);
     if (pos.x !== prevX || pos.z !== prevZ) maxPen = 0.25;
 
     for (const c of this.colliders) {
@@ -2699,18 +3946,26 @@ export class AssassinEngine {
     this.frameId = window.setTimeout(poll, 5);
   }
 
-  private triggerWasted(reasonKey: 'crash' | 'combat') {
+  private triggerWasted(
+    reasonKey: 'crash' | 'combat' | 'fall' | 'fall_high' | 'plane_explosion',
+  ) {
     if (this.isRagdoll) return;
     this.isRagdoll = true;
     this.ragdollProgress = 0;
     this.ragdollSeed = Math.random() > 0.5 ? 1 : -1;
     this.deathReasonKey = reasonKey;
+    this.planeCameraFrozen =
+      reasonKey === 'plane_explosion' || reasonKey === 'fall' || reasonKey === 'fall_high';
+    this.sound.setSupermarketMusic(false);
     this.health = 0;
     this.weaponWheelOpen = false;
     this.appearanceMenuOpen = false;
     this.lockpickMinigameOpen = false;
     this.lockpickCar = null;
     this.smashCar = null;
+    this.ticketKioskOpen = false;
+    this.policeMenuOpen = false;
+    this.supermarketOpen = false;
     this.activeCinematic = 'none';
     this.conversationActive = false;
     this.activeTalkNpcId = null;
@@ -2731,6 +3986,42 @@ export class AssassinEngine {
     if (document.pointerLockElement) {
       document.exitPointerLock?.();
     }
+    this.emitSnapshot();
+  }
+
+  private triggerPlaneCrashExplosion() {
+    if (this.activeCinematic === 'plane_crash_wasted' || this.isRagdoll) return;
+    this.planeIntegrity = 0;
+    this.planeExploded = false;
+    this.activeCinematic = 'plane_crash_wasted';
+    this.cinematicTimer = 0;
+    this.keys.clear();
+    this.sound.playPlaneExplosion();
+    this.sound.speak('plane_breach', { force: true });
+    this.assassin.root.visible = false;
+
+    if (!this.severedHeadRig) {
+      const rig = createSeveredHeadWithSpineRig(this.textures);
+      rig.group.position.set(
+        this.playerPos.x * 0.4,
+        1.7,
+        this.playerPos.z - 2.6,
+      );
+      this.scene.add(rig.group);
+      this.severedHeadRig = rig;
+    }
+    this.spawnBurst(
+      new THREE.Vector3(this.playerPos.x, 1.5, this.playerPos.z - 2.2),
+      0xf97316,
+      54,
+      8.5,
+    );
+    this.spawnBurst(
+      new THREE.Vector3(this.playerPos.x, 1.8, this.playerPos.z - 1.4),
+      0xfef08a,
+      36,
+      6.4,
+    );
     this.emitSnapshot();
   }
 
@@ -2851,7 +4142,10 @@ export class AssassinEngine {
             : 1.0;
     const dt = rawDt * timeScale;
     this.totalTime += dt;
+    this.drunkTimer = Math.max(0, this.drunkTimer - rawDt);
+    this.inGameMinutes = (this.inGameMinutes + dt * 2.2) % (24 * 60);
     this.updateWeather(rawDt);
+    this.updateBirds(dt);
 
     // Rain particles (only active & falling when rain/transition is visible)
     if (this.rainPoints.visible) {
@@ -2886,7 +4180,7 @@ export class AssassinEngine {
         this.debris.splice(i, 1);
         continue;
       }
-      const floor = this.getGroundHeightAt(d.mesh.position.x, d.mesh.position.z);
+      const floor = this.getGroundHeightAt(d.mesh.position.x, d.mesh.position.z, d.mesh.position.y);
       if (d.mesh.position.y > floor + 0.09) {
         d.velocity.y -= 15 * dt;
         d.mesh.position.addScaledVector(d.velocity, dt);
@@ -2924,8 +4218,11 @@ export class AssassinEngine {
       (b.points.material as THREE.PointsMaterial).opacity = b.life / b.maxLife;
     }
 
-    // Ragdoll state during WASTED screen (keep cloth anti-clipping physics active!)
+    // Ragdoll state during WASTED screen (freeze upward explosion frame on plane_explosion!)
     if (this.isRagdoll) {
+      if (this.planeCameraFrozen) {
+        return;
+      }
       this.ragdollProgress = Math.min(1, this.ragdollProgress + rawDt * 1.4);
       applyRagdollPose(this.assassin, this.ragdollProgress, this.ragdollSeed);
       updateClothPhysics(
@@ -3048,10 +4345,112 @@ export class AssassinEngine {
       return;
     }
 
+    if (this.activeCinematic === 'bar_wine_serve') {
+      this.updateBarWineCinematic(rawDt);
+      this.updateDynamicLights();
+      this.sound.updateSpatialVoices(this.playerPos, this.camYaw, (npcId) => {
+        const found = this.npcs.find((n) => n.id === npcId);
+        return found ? found.position : null;
+      });
+      this.snapshotTimer += rawDt;
+      if (this.snapshotTimer >= 0.08) {
+        this.snapshotTimer = 0;
+        this.emitSnapshot();
+      }
+      return;
+    }
+
+    if (this.activeCinematic === 'deliver_wine') {
+      this.updateDeliverWineCinematic(rawDt);
+      this.updateDynamicLights();
+      this.sound.updateSpatialVoices(this.playerPos, this.camYaw, (npcId) => {
+        const found = this.npcs.find((n) => n.id === npcId);
+        return found ? found.position : null;
+      });
+      this.snapshotTimer += rawDt;
+      if (this.snapshotTimer >= 0.08) {
+        this.snapshotTimer = 0;
+        this.emitSnapshot();
+      }
+      return;
+    }
+
+    if (this.activeCinematic === 'plane_threat') {
+      this.updatePlaneThreatCinematic(rawDt);
+      this.updateDynamicLights();
+      this.snapshotTimer += rawDt;
+      if (this.snapshotTimer >= 0.08) {
+        this.snapshotTimer = 0;
+        this.emitSnapshot();
+      }
+      return;
+    }
+
+    if (this.activeCinematic === 'plane_crash_wasted') {
+      this.updatePlaneCrashWastedCinematic(rawDt);
+      this.updateDynamicLights();
+      return;
+    }
+
+    if (this.activeCinematic === 'fall_plunge_wasted') {
+      this.updateFallPlungeWastedCinematic(rawDt);
+      this.updateDynamicLights();
+      return;
+    }
+
+    if (this.activeCinematic === 'ocean_dump') {
+      this.updateOceanDumpCinematic(rawDt);
+      this.updateDynamicLights();
+      return;
+    }
+
+    if (this.activeCinematic === 'arrested_transfer') {
+      this.updateArrestedTransferCinematic(rawDt);
+      this.updateDynamicLights();
+      return;
+    }
+
+    const inSupermarketNow =
+      this.currentMap === 'city' &&
+      this.phase === 'playing' &&
+      !this.isRagdoll &&
+      !this.activeVehicle &&
+      (this.getCurrentZoneName().includes('SuperMart') ||
+        this.getCurrentZoneName().includes('Corner Mart'));
+    this.sound.setSupermarketMusic(inSupermarketNow);
+
+    // Animate Hotel Vex Realistic Cabin Elevator & Sliding Double Doors
+    if (this.elevatorRiding) {
+      this.updateHotelElevatorAnimation(rawDt);
+    }
+
+    // Animate Coast Ocean Waves gently
+    if (this.oceanWaterMesh && this.oceanBaseY) {
+      const posAttr = this.oceanWaterMesh.geometry.attributes.position;
+      for (let i = 0; i < posAttr.count; i++) {
+        const vx = posAttr.getX(i);
+        const vz = posAttr.getZ(i);
+        const wave =
+          Math.sin(vx * 0.16 + this.totalTime * 1.8) * 0.14 +
+          Math.cos(vz * 0.22 + this.totalTime * 2.2) * 0.12;
+        posAttr.setY(i, this.oceanBaseY[i] + wave);
+      }
+      posAttr.needsUpdate = true;
+    }
+
+    // Gradual Prison Life Needs tick
+    if (this.currentMap === 'prison') {
+      this.prisonNeeds.hunger = Math.max(0, this.prisonNeeds.hunger - dt * 0.32);
+      this.prisonNeeds.energy = Math.max(0, this.prisonNeeds.energy - dt * 0.24);
+      this.prisonNeeds.hygiene = Math.max(0, this.prisonNeeds.hygiene - dt * 0.22);
+    }
+
     // Check Hotel Vex Lobby front-desk auto check-in cinematic on first visit
     if (
+      this.currentMap === 'city' &&
       !this.hotelCheckinDone &&
       !this.activeVehicle &&
+      this.playerPos.y < 3.5 &&
       this.playerPos.distanceTo(this.hotelVex.deskPos) < 3.6
     ) {
       this.startHotelCheckinCinematic();
@@ -3060,6 +4459,7 @@ export class AssassinEngine {
 
     // Check Atelier Vex Boutique entry (greeting cinematic + appearance option) and exit (WANTED posters!)
     const insideBoutique =
+      this.currentMap === 'city' &&
       !this.activeVehicle &&
       this.playerPos.x >= -31.4 &&
       this.playerPos.x <= -16.6 &&
@@ -3658,6 +5058,206 @@ export class AssassinEngine {
     }
   }
 
+  private startleNearbyBirds(origin: THREE.Vector3, radius: number) {
+    let anyStartled = false;
+    for (const b of this.birds) {
+      if (b.isSkyBird || b.state !== 'perched') continue;
+      if (b.position.distanceTo(origin) <= radius) {
+        b.state = 'startled';
+        b.timer = 4.5 + Math.random() * 3.5;
+        b.velocity.set(
+          (Math.random() - 0.5) * 6,
+          5.2 + Math.random() * 2.5,
+          (Math.random() - 0.5) * 6,
+        );
+        anyStartled = true;
+      }
+    }
+    if (anyStartled) {
+      this.sound.playBirdFlutter();
+    }
+  }
+
+  private updateBirds(dt: number) {
+    const startleRange = this.keys.has('ShiftLeft') || this.keys.has('ShiftRight') ? 6.2 : 3.6;
+    for (const b of this.birds) {
+      if (b.isSkyBird) {
+        b.orbitAngle += dt * (this.weather === 'rain' ? 0.14 : 0.24);
+        b.flapPhase += dt * 7.5;
+        const tx = Math.cos(b.orbitAngle) * b.orbitRadius;
+        const tz = Math.sin(b.orbitAngle) * b.orbitRadius;
+        const ty = (this.weather === 'rain' ? 14 : 20) + Math.sin(b.orbitAngle * 2) * 1.6;
+        const nextYaw = Math.atan2(tx - b.position.x, tz - b.position.z);
+        b.position.set(tx, ty, tz);
+        b.root.position.copy(b.position);
+        b.root.rotation.y = nextYaw;
+        const flap = Math.sin(b.flapPhase) * 0.55;
+        b.leftWingPivot.rotation.z = flap;
+        b.rightWingPivot.rotation.z = -flap;
+        continue;
+      }
+
+      if (b.state === 'perched') {
+        if (!this.activeVehicle && b.position.distanceTo(this.playerPos) < startleRange) {
+          this.startleNearbyBirds(b.position, 5.5);
+        } else {
+          // Pecking idle
+          b.flapPhase += dt * 2.5;
+          b.root.position.set(
+            b.perchPos.x,
+            b.perchPos.y + Math.max(0, Math.sin(b.flapPhase * 2) * 0.04),
+            b.perchPos.z,
+          );
+          b.root.rotation.x = Math.max(0, Math.sin(b.flapPhase * 1.4)) * 0.35;
+          b.leftWingPivot.rotation.z = 0.08;
+          b.rightWingPivot.rotation.z = -0.08;
+        }
+      } else if (b.state === 'startled') {
+        b.timer -= dt;
+        b.flapPhase += dt * 22;
+        b.velocity.y = THREE.MathUtils.damp(b.velocity.y, 1.4, 2.0, dt);
+        b.position.addScaledVector(b.velocity, dt);
+        b.root.position.copy(b.position);
+        b.root.rotation.x = -0.15;
+        b.root.rotation.y = Math.atan2(b.velocity.x, b.velocity.z);
+        const flap = Math.sin(b.flapPhase) * 0.92;
+        b.leftWingPivot.rotation.z = flap;
+        b.rightWingPivot.rotation.z = -flap;
+        if (b.timer <= 0) {
+          b.state = 'gliding';
+          b.timer = 4.5;
+        }
+      } else {
+        b.timer -= dt;
+        b.flapPhase += dt * 11;
+        b.position.lerp(b.perchPos, Math.min(1, dt * 1.1));
+        b.root.position.copy(b.position);
+        b.root.rotation.x = 0.1;
+        b.root.rotation.y = Math.atan2(
+          b.perchPos.x - b.position.x,
+          b.perchPos.z - b.position.z,
+        );
+        const flap = Math.sin(b.flapPhase) * 0.45;
+        b.leftWingPivot.rotation.z = flap;
+        b.rightWingPivot.rotation.z = -flap;
+        if (b.position.distanceTo(b.perchPos) < 0.25 || b.timer <= 0) {
+          b.position.copy(b.perchPos);
+          b.state = 'perched';
+        }
+      }
+    }
+  }
+
+  private updateBarWineCinematic(rawDt: number) {
+    this.cinematicTimer += rawDt;
+    const t = this.cinematicTimer;
+
+    const standTarget = _v1.set(-27.2, 0.14, 28.0);
+    this.playerPos.lerp(standTarget, Math.min(1, rawDt * 6));
+    this.playerYaw = this.dampAngle(this.playerYaw, -Math.PI * 0.72, 10, rawDt);
+    this.assassin.root.position.copy(this.playerPos);
+    this.assassin.root.rotation.y = this.playerYaw;
+    this.assassin.limbs.leftLeg.pivot.rotation.x = 0;
+    this.assassin.limbs.rightLeg.pivot.rotation.x = 0;
+
+    const bartender = this.npcs.find((n) => n.id === 'clerk_lounge');
+    if (bartender && bartender.alertState !== 'eliminated') {
+      bartender.position.lerp(_v2.set(-28.8, 0.14, 30.8), Math.min(1, rawDt * 4));
+      bartender.yaw = this.dampAngle(bartender.yaw, Math.PI * 0.85, 10, rawDt);
+      bartender.rig.root.position.copy(bartender.position);
+      bartender.rig.root.rotation.y = bartender.yaw;
+      bartender.rig.rightArm.rotation.x = -0.85 + Math.sin(t * 7) * 0.22;
+    }
+
+    if (t >= 1.1 && !this.wineCinematicServed) {
+      this.wineCinematicServed = true;
+      this.assassin.handWeapons.wineBottle.visible = true;
+      this.sound.playWinePour();
+    }
+    this.assassin.limbs.rightArm.pivot.rotation.x = t >= 1.1 ? -0.95 : -0.25;
+
+    const p = Math.min(1, t / 2.6);
+    this.camera.fov = 52;
+    this.camera.updateProjectionMatrix();
+    this.camera.position.set(
+      THREE.MathUtils.lerp(-24.2, -25.4, p),
+      THREE.MathUtils.lerp(2.1, 1.85, p),
+      THREE.MathUtils.lerp(25.2, 26.8, p),
+    );
+    this.camera.lookAt(-28.0, 1.35, 29.4);
+
+    if (t >= 2.7) {
+      this.activeCinematic = 'none';
+      this.hasWine = true;
+      this.assassin.handWeapons.wineBottle.visible = false;
+      setAssassinWeaponVisual(this.assassin, this.equippedWeapon);
+      this.camera.fov = 58;
+      this.camera.updateProjectionMatrix();
+      this.requestPointerLock();
+      this.emitSnapshot();
+    }
+  }
+
+  private updateDeliverWineCinematic(rawDt: number) {
+    this.cinematicTimer += rawDt;
+    const t = this.cinematicTimer;
+
+    const standTarget = _v1.set(-81.2, 0.14, -81.8);
+    this.playerPos.lerp(standTarget, Math.min(1, rawDt * 6));
+    this.playerYaw = this.dampAngle(this.playerYaw, Math.PI * 0.88, 10, rawDt);
+    this.assassin.root.position.copy(this.playerPos);
+    this.assassin.root.rotation.y = this.playerYaw;
+    this.assassin.limbs.rightArm.pivot.rotation.x = t < 1.3 ? -0.95 : -0.35;
+
+    const gentleman = this.npcs.find((n) => n.role === 'gentleman' && n.alertState !== 'eliminated');
+    if (gentleman) {
+      gentleman.yaw = this.dampAngle(gentleman.yaw, 0.25, 10, rawDt);
+      gentleman.rig.root.rotation.y = gentleman.yaw;
+      gentleman.rig.rightArm.rotation.x = t >= 1.2 ? -1.15 + Math.sin(t * 5) * 0.12 : -0.25;
+      gentleman.rig.bodyPivot.rotation.x = t >= 1.2 && t < 2.2 ? 0.18 : 0;
+    }
+
+    if (t >= 1.25 && !this.wineDeliveryRewarded) {
+      this.wineDeliveryRewarded = true;
+      this.hasWine = false;
+      this.wineDelivered = true;
+      this.suitRewardClaimed = true;
+      this.assassin.handWeapons.wineBottle.visible = false;
+      this.cash += 600;
+      this.health = this.maxHealth;
+      this.kunaiCooldown = 0;
+      this.equippedWeapon = 'pistol';
+      setAssassinWeaponVisual(this.assassin, 'pistol');
+      this.sound.playWinePour();
+      this.sound.playHeistPickup();
+      if (gentleman) {
+        this.speakNpc(gentleman, 'suit_man_reward');
+      } else {
+        this.sound.speak('suit_man_reward', { force: true });
+      }
+      this.spawnBurst(this.villaTablePos.clone().add(new THREE.Vector3(0, 0.9, 0)), 0xfbbf24, 26, 3.6);
+    }
+
+    const p = Math.min(1, t / 3.0);
+    this.camera.fov = 52;
+    this.camera.updateProjectionMatrix();
+    this.camera.position.set(
+      THREE.MathUtils.lerp(-78.5, -79.4, p),
+      THREE.MathUtils.lerp(2.2, 1.9, p),
+      THREE.MathUtils.lerp(-79.0, -83.8, p),
+    );
+    this.camera.lookAt(-82.0, 1.35, -82.4);
+
+    if (t >= 3.1) {
+      this.activeCinematic = 'none';
+      if (gentleman) gentleman.rig.bodyPivot.rotation.x = 0;
+      this.camera.fov = 58;
+      this.camera.updateProjectionMatrix();
+      this.requestPointerLock();
+      this.emitSnapshot();
+    }
+  }
+
   private spawnDynamicStreetNpc(
     id: string,
     name: string,
@@ -3965,9 +5565,9 @@ export class AssassinEngine {
     const handbrake = this.keys.has('Space');
 
     if (throttle > 0) {
-      car.speed = Math.min(31, car.speed + 16.5 * dt);
+      car.speed = Math.min(car.maxSpeed, car.speed + car.accel * dt);
     } else if (throttle < 0) {
-      car.speed = Math.max(-12, car.speed - 18.0 * dt);
+      car.speed = Math.max(-12, car.speed - (car.accel + 2) * dt);
     } else {
       car.speed = THREE.MathUtils.damp(car.speed, 0, handbrake ? 6 : 1.6, dt);
     }
@@ -4068,6 +5668,16 @@ export class AssassinEngine {
         this.onPlayerHit(Math.round(impactSpeed * 1.8));
       }
       car.speed *= -0.22;
+    }
+
+    const carGroundY = this.getGroundHeightAt(car.position.x, car.position.z, car.position.y);
+    car.position.y = Math.max(-20, carGroundY);
+    if (this.fallDeathY !== null && car.position.y < this.fallDeathY) {
+      this.activeVehicle = null;
+      this.assassin.root.visible = true;
+      this.playerPos.copy(car.position);
+      this.triggerHighFallCinematic(-115, 0, 0, false);
+      return;
     }
 
     car.root.position.copy(car.position);
@@ -4177,10 +5787,11 @@ export class AssassinEngine {
     if (moving) {
       _forward.set(-Math.sin(this.camYaw), 0, -Math.cos(this.camYaw));
       _right.set(Math.cos(this.camYaw), 0, -Math.sin(this.camYaw));
+      const sway = this.drunkTimer > 0 ? Math.sin(this.totalTime * 2.4) * 0.28 : 0;
       _v1
         .set(0, 0, 0)
         .addScaledVector(_forward, moveZ)
-        .addScaledVector(_right, moveX)
+        .addScaledVector(_right, moveX + sway)
         .normalize();
 
       this.playerPos.addScaledVector(_v1, speed * dt);
@@ -4201,16 +5812,31 @@ export class AssassinEngine {
       this.walkPhase = THREE.MathUtils.damp(this.walkPhase, 0, 6, dt);
     }
 
-    const floorY = this.getGroundHeightAt(this.playerPos.x, this.playerPos.z);
+    const floorY = this.getGroundHeightAt(this.playerPos.x, this.playerPos.z, this.playerPos.y);
+    if (this.playerPos.y > floorY) {
+      this.fallPeakY = Math.max(this.fallPeakY, this.playerPos.y);
+    }
     if (this.playerPos.y > floorY || this.playerVelY > 0) {
       this.playerVelY -= 18 * dt;
       this.playerPos.y += this.playerVelY * dt;
       if (this.playerPos.y <= floorY) {
+        const dropHeight = this.fallPeakY - floorY;
         this.playerPos.y = floorY;
         this.playerVelY = 0;
+        this.fallPeakY = floorY;
+        if (this.currentMap === 'city' && dropHeight > 12.0) {
+          this.triggerHighFallCinematic(floorY, this.playerPos.x, this.playerPos.z, true);
+          return;
+        }
       }
     } else {
       this.playerPos.y = floorY;
+      this.fallPeakY = floorY;
+    }
+
+    if (this.fallDeathY !== null && this.playerPos.y < this.fallDeathY) {
+      this.triggerHighFallCinematic(-115, 0, 0, false);
+      return;
     }
 
     this.resolveCircleCollisions(this.playerPos, 0.44);
@@ -4321,6 +5947,25 @@ export class AssassinEngine {
         }
       }
 
+      // Check Airliner Fuselage Wall Hit during Flight 409 Wanted Incident!
+      if (!remove && this.currentMap === 'plane_incident' && this.planeWalls.length > 0) {
+        for (const pw of this.planeWalls) {
+          if (
+            p.position.x >= pw.minX &&
+            p.position.x <= pw.maxX &&
+            p.position.y >= pw.minY &&
+            p.position.y <= pw.maxY &&
+            p.position.z >= pw.minZ &&
+            p.position.z <= pw.maxZ
+          ) {
+            this.scene.remove(p.mesh);
+            this.projectiles.splice(i, 1);
+            this.triggerPlaneCrashExplosion();
+            return;
+          }
+        }
+      }
+
       if (!remove) {
         for (const c of this.colliders) {
           const minY = c.minY ?? 0;
@@ -4342,7 +5987,7 @@ export class AssassinEngine {
 
       if (!remove && p.fromPlayer) {
         for (const npc of this.npcs) {
-          if (npc.alertState === 'eliminated') continue;
+          if (npc.alertState === 'eliminated' || npc.isCompanion) continue;
           const dx = p.position.x - npc.position.x;
           const dz = p.position.z - npc.position.z;
           if (
@@ -4379,8 +6024,35 @@ export class AssassinEngine {
   }
 
   private onPlayerHit(damage: number) {
-    if (this.isRagdoll) return;
-    this.health = Math.max(0, this.health - damage);
+    if (this.isRagdoll || this.activeCinematic !== 'none') return;
+
+    // Non-lethal Police Taze/Arrest when Wanted and near an officer on City/Coast/Sky
+    const policeClose = this.npcs.some(
+      (n) =>
+        n.role === 'police' &&
+        n.alertState !== 'eliminated' &&
+        n.position.distanceTo(this.playerPos) < 16,
+    );
+    if (
+      this.wantedLevel >= 1 &&
+      policeClose &&
+      this.health - damage <= 16 &&
+      this.currentMap !== 'plane_incident' &&
+      this.currentMap !== 'prison'
+    ) {
+      this.arrestPlayer();
+      return;
+    }
+
+    // Body Armor absorbs up to 65% of incoming damage
+    let netDamage = damage;
+    if (this.armor > 0) {
+      const absorbed = Math.min(this.armor, Math.round(damage * 0.65));
+      this.armor = Math.max(0, this.armor - absorbed);
+      netDamage = Math.max(1, damage - absorbed);
+    }
+
+    this.health = Math.max(0, this.health - netDamage);
     this.spawnBurst(
       this.playerPos.clone().add(new THREE.Vector3(0, 1.2, 0)),
       0xdc2626,
@@ -4630,6 +6302,17 @@ export class AssassinEngine {
       }
 
       if (d.timer >= 4.2) {
+        // Record arrested street fighters into Precinct Bail Roster!
+        for (const fid of d.fighterIds ?? []) {
+          const fn = this.npcs.find((n) => n.id === fid);
+          if (fn && !this.arrestedFighters.some((r) => r.id === fn.id)) {
+            this.arrestedFighters.push({
+              id: fn.id,
+              name: fn.name,
+              bailCost: 150,
+            });
+          }
+        }
         for (const id of [...(d.fighterIds ?? []), ...d.officerIds]) {
           const npc = this.npcs.find((n) => n.id === id);
           if (npc) {
@@ -4646,6 +6329,354 @@ export class AssassinEngine {
         d.stage = 'idle';
         this.emitSnapshot();
       }
+    }
+  }
+
+  private updateHotelElevatorAnimation(rawDt: number) {
+    const step = 5.2 * rawDt;
+    if (this.elevatorPhase === 'closing') {
+      this.elevatorDoorProgress = Math.max(0, this.elevatorDoorProgress - rawDt * 2.8);
+      if (this.elevatorDoorProgress <= 0) {
+        this.elevatorPhase = 'moving';
+      }
+    } else if (this.elevatorPhase === 'moving') {
+      const diff = this.elevatorTargetY - this.elevatorCurrentY;
+      if (Math.abs(diff) <= step) {
+        this.elevatorCurrentY = this.elevatorTargetY;
+        this.elevatorPhase = 'opening';
+        this.sound.playElevatorDing();
+        this.spawnBurst(
+          this.playerPos.clone().add(new THREE.Vector3(0, 1.2, 0)),
+          0x38bdf8,
+          12,
+          2.0,
+        );
+      } else {
+        this.elevatorCurrentY += Math.sign(diff) * step;
+      }
+      this.playerPos.y = this.elevatorCurrentY;
+      this.assassin.root.position.copy(this.playerPos);
+    } else if (this.elevatorPhase === 'opening') {
+      this.elevatorDoorProgress = Math.min(1, this.elevatorDoorProgress + rawDt * 2.8);
+      if (this.elevatorDoorProgress >= 1) {
+        this.elevatorPhase = 'idle';
+        this.elevatorRiding = false;
+        this.emitSnapshot();
+      }
+    }
+
+    if (this.hotelVex?.elevatorCabinGroup) {
+      this.hotelVex.elevatorCabinGroup.position.y = this.elevatorCurrentY;
+      const offset = 0.46 + this.elevatorDoorProgress * 0.56;
+      this.hotelVex.elevatorDoorL.position.x = -offset;
+      this.hotelVex.elevatorDoorR.position.x = offset;
+    }
+  }
+
+  private updatePlaneThreatCinematic(rawDt: number) {
+    this.cinematicTimer += rawDt;
+    const t = this.cinematicTimer;
+
+    if (!this.marshalThreatSpoken && t >= 0.45) {
+      this.marshalThreatSpoken = true;
+      const lead = this.npcs.find((n) => n.role === 'marshal');
+      if (lead) {
+        this.speakNpc(lead, 'marshal_threat');
+      } else {
+        this.sound.speak('marshal_threat', { force: true });
+      }
+    }
+
+    this.assassin.root.position.copy(this.playerPos);
+    this.assassin.root.rotation.y = Math.PI;
+    this.assassin.limbs.rightArm.pivot.rotation.x = -Math.PI * 0.42;
+
+    for (const m of this.npcs) {
+      if (m.role !== 'marshal') continue;
+      m.yaw = 0;
+      m.rig.root.position.copy(m.position);
+      m.rig.root.rotation.y = 0;
+      m.rig.rightArm.rotation.x = -Math.PI * 0.48;
+    }
+
+    const sweep = Math.min(1, t / 3.0);
+    this.camera.fov = 52;
+    this.camera.updateProjectionMatrix();
+    this.camera.position.set(
+      THREE.MathUtils.lerp(1.4, -1.2, sweep),
+      1.75,
+      THREE.MathUtils.lerp(4.0, 9.2, sweep),
+    );
+    this.camera.lookAt(0, 1.35, -6.0);
+
+    if (t >= 3.1) {
+      this.activeCinematic = 'none';
+      this.camera.fov = 58;
+      this.camera.updateProjectionMatrix();
+      for (const m of this.npcs) {
+        if (m.role === 'marshal') {
+          m.alertState = 'combat';
+          m.lastKnownPlayerPos = this.playerPos.clone();
+          m.alertTimer = 30;
+          m.attackCooldown = 1.1;
+        }
+      }
+      this.requestPointerLock();
+      this.emitSnapshot();
+    }
+  }
+
+  private updatePlaneCrashWastedCinematic(rawDt: number) {
+    this.cinematicTimer += rawDt;
+    const t = this.cinematicTimer;
+
+    if (this.planeCabinExplodeGroup) {
+      this.planeCabinExplodeGroup.rotation.z = Math.sin(t * 14) * Math.min(0.28, t * 0.18);
+      this.planeCabinExplodeGroup.rotation.x = Math.min(0.14, t * 0.08);
+    }
+
+    // Floor-mounted camera looking straight UP as severed head + spine flies directly toward lens!
+    const camPos = new THREE.Vector3(0, 0.24, 9.5);
+    if (this.severedHeadRig) {
+      const p = Math.min(1, t / 2.1);
+      const ease = p * p;
+      this.severedHeadRig.group.position.set(
+        THREE.MathUtils.lerp(0.2, 0.0, ease),
+        THREE.MathUtils.lerp(2.4, 0.85, ease),
+        THREE.MathUtils.lerp(2.5, 9.25, ease),
+      );
+      this.severedHeadRig.group.rotation.x += rawDt * 6.4;
+      this.severedHeadRig.group.rotation.y += rawDt * 4.1;
+      this.severedHeadRig.group.rotation.z += rawDt * 3.5;
+
+      this.camera.fov = THREE.MathUtils.lerp(66, 52, p);
+      this.camera.updateProjectionMatrix();
+      this.camera.position.copy(camPos);
+      this.camera.lookAt(this.severedHeadRig.group.position);
+    }
+
+    if (t >= 2.15 && !this.planeExploded) {
+      this.planeExploded = true;
+      this.triggerWasted('plane_explosion');
+    }
+  }
+
+  private spawnBloodPoolDecal(x: number, y: number, z: number, radius: number) {
+    const geo = new THREE.CircleGeometry(radius, 18);
+    geo.rotateX(-Math.PI / 2);
+    const mat = new THREE.MeshStandardMaterial({
+      color: 0x5c0606,
+      roughness: 0.12,
+      metalness: 0.15,
+      transparent: true,
+      opacity: 0.92,
+      depthWrite: false,
+    });
+    const m = new THREE.Mesh(geo, mat);
+    m.position.set(x, y + 0.025, z);
+    this.scene.add(m);
+    this.decals.push(m);
+  }
+
+  private triggerHighFallCinematic(
+    streetImpactY: number,
+    impactX: number,
+    impactZ: number,
+    isCityHighDrop: boolean,
+  ) {
+    if (this.activeCinematic === 'fall_plunge_wasted' || this.isRagdoll) return;
+    this.activeCinematic = 'fall_plunge_wasted';
+    this.cinematicTimer = 0;
+    this.fallPlungeStreetY = streetImpactY;
+    this.fallPlungeImpactX = impactX;
+    this.fallPlungeImpactZ = impactZ;
+    this.fallPlungeIsCityHighDrop = isCityHighDrop;
+    this.fallGoreSpawned = false;
+    this.fallCinematicStartPos.set(
+      this.playerPos.x,
+      isCityHighDrop ? this.playerPos.y + 13.5 : Math.max(this.playerPos.y, -7),
+      this.playerPos.z,
+    );
+    this.keys.clear();
+    this.weaponWheelOpen = false;
+    this.appearanceMenuOpen = false;
+    this.phoneOpen = false;
+    this.supermarketOpen = false;
+    this.sound.setSupermarketMusic(false);
+    this.sound.playWindPlunge();
+    this.assassin.root.visible = true;
+    this.emitSnapshot();
+  }
+
+  private updateFallPlungeWastedCinematic(rawDt: number) {
+    this.cinematicTimer += rawDt;
+    const t = this.cinematicTimer;
+    const streetY = this.fallPlungeStreetY;
+    const impactX = this.fallPlungeImpactX;
+    const impactZ = this.fallPlungeImpactZ;
+
+    if (t < 1.65) {
+      // Phase 1: Flailing vertical plunge from sky/rooftop while camera chases from above!
+      const p = t / 1.65;
+      const curY = THREE.MathUtils.lerp(this.fallCinematicStartPos.y, streetY + 14.0, p * p);
+      const curX = THREE.MathUtils.lerp(this.fallCinematicStartPos.x, impactX, p);
+      const curZ = THREE.MathUtils.lerp(this.fallCinematicStartPos.z, impactZ, p);
+      this.playerPos.set(curX, curY, curZ);
+      this.assassin.root.position.copy(this.playerPos);
+      this.assassin.root.rotation.set(t * 4.5, this.playerYaw + t * 2.8, Math.sin(t * 6) * 0.7);
+      this.assassin.limbs.leftArm.pivot.rotation.x = -2.2 + Math.sin(t * 15) * 0.6;
+      this.assassin.limbs.rightArm.pivot.rotation.x = -2.2 - Math.sin(t * 15) * 0.6;
+      this.assassin.limbs.leftLeg.pivot.rotation.x = Math.sin(t * 14) * 0.55;
+      this.assassin.limbs.rightLeg.pivot.rotation.x = -Math.sin(t * 14) * 0.55;
+
+      this.camera.fov = 74;
+      this.camera.updateProjectionMatrix();
+      this.camera.position.set(curX + 2.4, curY + 4.8, curZ + 3.2);
+      this.camera.lookAt(curX, curY - 2.0, curZ);
+    } else {
+      // Phase 2: Hard cut to Downtown street impact shot — dismembered limbs & blood splatter!
+      this.playerPos.set(impactX, streetY, impactZ);
+      this.assassin.root.position.copy(this.playerPos);
+      this.assassin.root.rotation.set(0, 0.35, 0);
+      applyRagdollPose(this.assassin, 1.0, 1);
+
+      if (!this.fallGoreSpawned) {
+        this.fallGoreSpawned = true;
+        this.sound.playBodySplatGore();
+        this.spawnBurst(new THREE.Vector3(impactX, streetY + 0.35, impactZ), 0x991b1b, 64, 7.2);
+        this.spawnBurst(new THREE.Vector3(impactX, streetY + 0.6, impactZ), 0xdc2626, 36, 4.8);
+        this.spawnBloodPoolDecal(impactX, streetY, impactZ, 1.85);
+        this.spawnBloodPoolDecal(impactX + 1.15, streetY, impactZ - 0.65, 0.95);
+        this.spawnBloodPoolDecal(impactX - 0.95, streetY, impactZ + 0.85, 0.78);
+
+        for (const id of ['leftArm', 'rightArm', 'leftLeg', 'rightLeg'] as const) {
+          this.assassin.limbs[id].growthRoot.scale.set(0.0001, 0.0001, 0.0001);
+          this.spawnSeveredLimbDebris(id);
+        }
+      }
+
+      this.camera.fov = 52;
+      this.camera.updateProjectionMatrix();
+      this.camera.position.set(impactX + 3.2, streetY + 1.45, impactZ + 4.2);
+      this.camera.lookAt(impactX, streetY + 0.35, impactZ);
+
+      if (t >= 3.0) {
+        this.triggerWasted(this.fallPlungeIsCityHighDrop ? 'fall_high' : 'fall');
+      }
+    }
+  }
+
+  private updateOceanDumpCinematic(rawDt: number) {
+    this.cinematicTimer += rawDt;
+    const t = this.cinematicTimer;
+    const npc = this.oceanDumpNpc;
+    const shoreZ = this.oceanShoreZ ?? 52;
+    if (!npc) {
+      this.activeCinematic = 'none';
+      return;
+    }
+
+    const edgePos = new THREE.Vector3(
+      this.oceanDumpStartPos.x,
+      this.getGroundHeightAt(this.oceanDumpStartPos.x, shoreZ),
+      shoreZ + 0.8,
+    );
+
+    if (t < 1.65) {
+      const p = Math.min(1, t / 1.65);
+      this.playerPos.lerpVectors(this.oceanDumpStartPos, edgePos, p);
+      this.playerPos.y = this.getGroundHeightAt(this.playerPos.x, this.playerPos.z);
+      this.playerYaw = 0;
+      this.assassin.root.position.copy(this.playerPos);
+      this.assassin.root.rotation.y = 0;
+      this.walkPhase += rawDt * 8;
+      const stride = Math.sin(this.walkPhase) * 0.45;
+      this.assassin.limbs.leftLeg.pivot.rotation.x = stride;
+      this.assassin.limbs.rightLeg.pivot.rotation.x = -stride;
+      this.assassin.limbs.leftArm.pivot.rotation.x = -0.95;
+      this.assassin.limbs.rightArm.pivot.rotation.x = -0.95;
+
+      npc.position.set(this.playerPos.x, this.playerPos.y, this.playerPos.z + 0.55);
+      npc.rig.root.position.copy(npc.position);
+      applyNpcRagdollPose(npc.rig, 0.9, 1, -1);
+    } else {
+      const sinkT = Math.min(1, (t - 1.65) / 1.25);
+      if (!this.oceanDumpSplashed) {
+        this.oceanDumpSplashed = true;
+        this.sound.playWaterSplash();
+        this.sound.speak('ocean_dump_line', { force: true });
+        this.spawnBurst(new THREE.Vector3(edgePos.x, 0.2, shoreZ + 2.6), 0xbae6fd, 32, 4.8);
+      }
+      npc.position.set(
+        edgePos.x,
+        THREE.MathUtils.lerp(0.2, -2.4, sinkT),
+        THREE.MathUtils.lerp(shoreZ + 1.2, shoreZ + 3.6, sinkT),
+      );
+      npc.rig.root.position.copy(npc.position);
+      if (t >= 2.95) {
+        npc.disposed = true;
+        npc.rig.root.visible = false;
+        this.activeCinematic = 'none';
+        this.oceanDumpNpc = null;
+        this.camera.fov = 58;
+        this.camera.updateProjectionMatrix();
+        this.requestPointerLock();
+        this.emitSnapshot();
+        return;
+      }
+    }
+
+    this.camera.fov = 54;
+    this.camera.updateProjectionMatrix();
+    this.camera.position.set(this.playerPos.x + 3.8, 2.2, this.playerPos.z - 2.6);
+    this.camera.lookAt(this.playerPos.x, 0.9, shoreZ + 1.8);
+  }
+
+  private updateArrestedTransferCinematic(rawDt: number) {
+    this.cinematicTimer += rawDt;
+    const t = this.cinematicTimer;
+
+    this.assassin.root.position.copy(this.playerPos);
+    this.assassin.limbs.leftArm.pivot.rotation.x = -2.35;
+    this.assassin.limbs.rightArm.pivot.rotation.x = -2.35;
+
+    this.camera.fov = 54;
+    this.camera.updateProjectionMatrix();
+    this.camera.position.set(this.playerPos.x + 3.4, this.playerPos.y + 2.1, this.playerPos.z + 3.4);
+    this.camera.lookAt(this.playerPos.x, this.playerPos.y + 1.2, this.playerPos.z);
+
+    if (t >= 1.65 && !this.arrestedTransferDone) {
+      this.arrestedTransferDone = true;
+      this.activeCinematic = 'none';
+      this.camera.fov = 58;
+      this.camera.updateProjectionMatrix();
+      this.assassin.limbs.leftArm.pivot.rotation.set(0, 0, 0);
+      this.assassin.limbs.rightArm.pivot.rotation.set(0, 0, 0);
+
+      if (this.arrestedTargetWanted === 1 && this.holdingCellPos) {
+        // 1 Wanted Star: Locked in small Police Holding Cell until bail is paid!
+        this.inHoldingCell = true;
+        this.wantedLevel = 0;
+        this.openHoldingCellDoor(false);
+        this.playerPos.copy(this.holdingCellPos);
+        this.assassin.root.position.copy(this.playerPos);
+        this.sound.playCellBarsSlam();
+        this.sound.speak('police_cell_lock', { force: true });
+        for (const n of this.npcs) {
+          if (n.role === 'police' && n.alertState === 'combat') {
+            n.alertState = 'patrol';
+          }
+        }
+      } else {
+        // 2+ Wanted Stars: Sent to massive separate Prison map (no bail!)
+        this.wantedLevel = 0;
+        this.switchMap('prison');
+        this.sound.playPrisonBuzzer();
+        this.sound.speak('prison_intake', { force: true });
+      }
+      this.updateCamera(1.0);
+      this.requestPointerLock();
+      this.emitSnapshot();
     }
   }
 
@@ -4827,12 +6858,58 @@ export class AssassinEngine {
         continue;
       }
 
+      if (npc.isCompanion) {
+        npc.punchCooldown = Math.max(0, (npc.punchCooldown ?? 0) - dt);
+        const enemy = this.npcs.find(
+          (o) =>
+            o !== npc &&
+            !o.isCompanion &&
+            o.alertState !== 'eliminated' &&
+            (o.alertState === 'combat' || o.alertState === 'threaten' || o.isPlayerFighter) &&
+            o.position.distanceTo(this.playerPos) < 22,
+        );
+        const goalPos = enemy ? enemy.position : this.playerPos;
+        const stopDist = enemy ? 1.45 : 3.2;
+        _v1.subVectors(goalPos, npc.position).setY(0);
+        const d = _v1.length();
+        if (d > stopDist) {
+          _v1.normalize();
+          npc.position.addScaledVector(_v1, (enemy ? 4.4 : 3.6) * dt);
+          npc.yaw = this.dampAngle(npc.yaw, Math.atan2(_v1.x, _v1.z), 10, dt);
+          npc.walkPhase += dt * 8.5;
+        } else if (enemy) {
+          npc.yaw = this.dampAngle(npc.yaw, Math.atan2(_v1.x, _v1.z), 12, dt);
+          if ((npc.punchCooldown ?? 0) <= 0) {
+            npc.punchCooldown = 0.72;
+            npc.fightTimer = 0.35;
+            this.sound.playPunchImpact();
+            this.damageNpc(enemy, 28, true, _v1.normalize());
+          }
+        }
+        npc.fightTimer = Math.max(0, (npc.fightTimer ?? 0) - dt);
+        npc.position.y = this.getGroundHeightAt(npc.position.x, npc.position.z, npc.position.y);
+        this.resolveCircleCollisions(npc.position, 0.42);
+        npc.rig.root.position.copy(npc.position);
+        npc.rig.root.rotation.y = npc.yaw;
+        const swing = npc.fightTimer > 0 ? Math.sin((npc.fightTimer / 0.35) * Math.PI) * 1.65 : 0;
+        const stepS = d > stopDist ? Math.sin(npc.walkPhase) * 0.48 : 0;
+        npc.rig.leftLeg.rotation.x = stepS;
+        npc.rig.rightLeg.rotation.x = -stepS;
+        npc.rig.rightArm.rotation.x = enemy ? -0.95 - swing : -stepS * 0.4;
+        npc.rig.leftArm.rotation.x = enemy ? -0.8 + swing * 0.5 : stepS * 0.4;
+        npc.rig.bodyPivot.position.y = 0.94;
+        continue;
+      }
+
       // IMPORTANT: When wantedLevel === 0, NPCs perceive player as a normal citizen,
       // EXCEPT when WANTED posters are up (or kills occurred), staring longer makes them recognize your face & call 911!
       if (this.wantedLevel > 0 && inCone) {
         npc.rig.phoneMesh.visible = false;
         npc.rig.posterMesh.visible = false;
-        if (npc.role === 'civilian' && npc.alertState !== 'fleeing') {
+        if (
+          (npc.role === 'civilian' || npc.role === 'collector' || npc.role === 'poor') &&
+          npc.alertState !== 'fleeing'
+        ) {
           npc.alertState = 'fleeing';
           npc.alertTimer = 15;
           this.speakNpc(npc, 'civ_panic_2');
@@ -4851,7 +6928,9 @@ export class AssassinEngine {
           npc.role === 'guard' ||
           npc.role === 'heavy' ||
           npc.role === 'target' ||
-          npc.role === 'police'
+          npc.role === 'police' ||
+          npc.role === 'marshal' ||
+          npc.role === 'inmate'
         ) {
           if (npc.alertState !== 'combat') {
             npc.alertState = 'combat';
@@ -4868,6 +6947,8 @@ export class AssassinEngine {
         !this.activeVehicle &&
         (this.postersTriggered || anyKilled) &&
         !(npc.isBoutiqueResident && this.wasInsideBoutique) &&
+        npc.role !== 'gentleman' &&
+        !this.helpedNpcIds.has(npc.id) &&
         npc.alertState !== 'fleeing' &&
         npc.alertState !== 'cowering' &&
         npc.alertState !== 'combat' &&
@@ -5243,10 +7324,21 @@ export class AssassinEngine {
         }
       }
 
-      npc.position.y = this.getGroundHeightAt(npc.position.x, npc.position.z);
+      npc.position.y = this.getGroundHeightAt(npc.position.x, npc.position.z, npc.position.y);
       this.resolveCircleCollisions(npc.position, 0.42);
       npc.rig.root.position.copy(npc.position);
       npc.rig.root.rotation.y = npc.yaw;
+
+      const celTime = this.poorCelebrateTimer.get(npc.id) ?? 0;
+      if (celTime > 0) {
+        this.poorCelebrateTimer.set(npc.id, Math.max(0, celTime - dt));
+        npc.rig.leftLeg.rotation.x = 0;
+        npc.rig.rightLeg.rotation.x = 0;
+        npc.rig.leftArm.rotation.x = -2.1 + Math.sin(this.totalTime * 11) * 0.25;
+        npc.rig.rightArm.rotation.x = -2.1 - Math.sin(this.totalTime * 11) * 0.25;
+        npc.rig.bodyPivot.position.y = 0.94 + Math.abs(Math.sin(this.totalTime * 9)) * 0.06;
+        continue;
+      }
 
       // Pose arms & legs based on state
       const isMoving =
@@ -5378,13 +7470,19 @@ export class AssassinEngine {
     this.currentCamPos.lerp(_camGoal, 1 - Math.exp(-lambda * dt));
     this.currentCamLook.lerp(_lookTarget, 1 - Math.exp(-lambda * dt));
 
+    const drunkWeight = Math.min(1, this.drunkTimer / 8);
+    if (drunkWeight > 0) {
+      _camGoal.x += Math.sin(this.totalTime * 1.9) * 0.28 * drunkWeight;
+      _camGoal.y += Math.cos(this.totalTime * 2.3) * 0.14 * drunkWeight;
+    }
+
     this.camera.position.copy(this.currentCamPos);
     this.camera.lookAt(this.currentCamLook);
 
     const sprinting =
       this.keys.has('ShiftLeft') || this.keys.has('ShiftRight');
     const speedKmh = this.activeVehicle ? Math.abs(this.activeVehicle.speed) * 3.6 : 0;
-    const targetFov =
+    const baseFov =
       this.cameraPreset === 'regen'
         ? 48
         : this.activeVehicle
@@ -5392,6 +7490,7 @@ export class AssassinEngine {
           : sprinting
             ? 65
             : 58;
+    const targetFov = baseFov + drunkWeight * Math.sin(this.totalTime * 1.7) * 3.2;
     if (Math.abs(this.camera.fov - targetFov) > 0.05) {
       this.camera.fov = THREE.MathUtils.damp(
         this.camera.fov,
@@ -5439,6 +7538,37 @@ export class AssassinEngine {
       }
     }
 
+    const nearElevator =
+      Math.hypot(
+        this.playerPos.x - this.hotelVex.elevatorPos.x,
+        this.playerPos.z - this.hotelVex.elevatorPos.z,
+      ) < 2.6;
+    const nearBarWine =
+      !this.hasWine &&
+      !this.wineDelivered &&
+      this.playerPos.distanceTo(this.barWinePos) < 3.4;
+    const gentleman = this.npcs.find((n) => n.role === 'gentleman' && n.alertState !== 'eliminated');
+    const nearGentleman =
+      Boolean(gentleman) &&
+      (this.playerPos.distanceTo(gentleman!.position) < 3.4 ||
+        this.playerPos.distanceTo(this.villaTablePos) < 3.0);
+    const poorNear = this.npcs.find(
+      (n) =>
+        n.role === 'poor' &&
+        n.alertState !== 'eliminated' &&
+        !this.helpedNpcIds.has(n.id) &&
+        n.position.distanceTo(this.playerPos) < 3.0,
+    );
+    const nearOakDrive = this.houses.find(
+      (h) => h.sideItemPos && !h.sideItemDone && this.playerPos.distanceTo(h.sideItemPos) < 2.6,
+    );
+    const nearHouseSafe = this.houses.find(
+      (h) => !h.robbed && h.unlocked && this.playerPos.distanceTo(h.safePos) < 2.6,
+    );
+    const nearHouseDoor = this.houses.find(
+      (h) => !h.unlocked && this.playerPos.distanceTo(h.doorPos) < 2.8,
+    );
+
     let contextPrompt: string | null = null;
     const chosenBed = this.chosenHotelRoom
       ? this.hotelVex.rooms[this.chosenHotelRoom].bedPos
@@ -5446,11 +7576,30 @@ export class AssassinEngine {
     if (
       this.activeCinematic !== 'none' ||
       this.lockpickMinigameOpen ||
-      this.hotelRoomMenuOpen
+      this.hotelRoomMenuOpen ||
+      this.elevatorMenuOpen ||
+      this.phoneOpen
     ) {
       contextPrompt = null;
     } else if (this.activeVehicle) {
       contextPrompt = t.promptExitCar;
+    } else if (nearElevator) {
+      contextPrompt = t.promptElevator;
+    } else if (nearBarWine) {
+      contextPrompt = t.promptOrderWine;
+    } else if (nearGentleman) {
+      contextPrompt = this.hasWine && !this.wineDelivered ? t.promptDeliverWine : t.promptMeetGentleman;
+    } else if (poorNear) {
+      contextPrompt = `${t.promptGiveMoney} · ${poorNear.name}`;
+    } else if (nearOakDrive) {
+      contextPrompt = t.promptSideMission;
+    } else if (nearHouseSafe) {
+      contextPrompt = `${t.promptRobSafe} ($${nearHouseSafe.lootCash})`;
+    } else if (nearHouseDoor) {
+      contextPrompt =
+        this.equippedWeapon === 'lockpick'
+          ? `${t.promptPickHouseDoor} · ${nearHouseDoor.name}`
+          : `${t.promptForceHouseDoor} · ${nearHouseDoor.name}`;
     } else if (
       !this.hotelVex.ledgerStolen &&
       this.hotelVex.suite204Door.unlocked &&
@@ -5467,7 +7616,7 @@ export class AssassinEngine {
           : t.promptForceSuiteDoor;
     } else if (chosenBed && this.playerPos.distanceTo(chosenBed) < 3.2) {
       contextPrompt = t.promptRestBed;
-    } else if (this.playerPos.distanceTo(this.hotelVex.deskPos) < 4.0) {
+    } else if (this.playerPos.y < 3.5 && this.playerPos.distanceTo(this.hotelVex.deskPos) < 4.0) {
       contextPrompt = t.promptHotelDesk;
     } else if (silenceCandidate) {
       contextPrompt = `${t.promptSilenceWitness} ${silenceCandidate.name}`;
@@ -5492,8 +7641,8 @@ export class AssassinEngine {
     const cosY = Math.cos(-this.camYaw);
     const sinY = Math.sin(-this.camYaw);
     const radarBlips: RadarBlip[] = this.npcs.map((n) => {
-      const dx = (n.position.x - this.playerPos.x) / 72;
-      const dz = (n.position.z - this.playerPos.z) / 72;
+      const dx = (n.position.x - this.playerPos.x) / 125;
+      const dz = (n.position.z - this.playerPos.z) / 125;
       return {
         id: n.id,
         x: THREE.MathUtils.clamp(dx * cosY - dz * sinY, -0.95, 0.95),
@@ -5519,9 +7668,131 @@ export class AssassinEngine {
     const deathReason =
       this.deathReasonKey === 'crash'
         ? t.deathCrash
-        : this.deathReasonKey === 'combat'
-          ? t.deathCombat
-          : null;
+        : this.deathReasonKey === 'fall_high'
+          ? t.deathHighFall
+          : this.deathReasonKey === 'fall'
+            ? t.deathFall
+            : this.deathReasonKey === 'plane_explosion'
+              ? t.deathPlaneCrash
+              : this.deathReasonKey === 'combat'
+                ? t.deathCombat
+                : null;
+
+    const nearExtraMission = this.extraMissions.find(
+      (m) => !m.completed && this.playerPos.distanceTo(m.pos) < 3.2,
+    );
+
+    // Context prompts for new locations & features
+    if (!contextPrompt && !this.activeVehicle && this.activeCinematic === 'none') {
+      if (
+        this.supermarketCheckoutPos &&
+        this.playerPos.distanceTo(this.supermarketCheckoutPos) < 3.4
+      ) {
+        contextPrompt = t.promptSupermarketCheckout;
+      } else if (nearExtraMission) {
+        if (nearExtraMission.id === 'bank_hack') contextPrompt = t.promptBankHack;
+        else if (nearExtraMission.id === 'airport_briefcase') contextPrompt = t.promptAirportBriefcase;
+        else if (nearExtraMission.id === 'coast_smuggler') contextPrompt = t.promptCoastPackage;
+        else if (nearExtraMission.id === 'sky_relay') contextPrompt = t.promptSkyRelay;
+      } else if (
+        this.inHoldingCell &&
+        this.cellBailPos &&
+        this.playerPos.distanceTo(this.cellBailPos) < 3.2
+      ) {
+        contextPrompt = `${t.promptPayCellBail} ($${Math.min(this.cash, this.holdingCellBail)})`;
+      } else if (
+        this.policeDeskPos &&
+        !this.inHoldingCell &&
+        this.playerPos.distanceTo(this.policeDeskPos) < 3.6
+      ) {
+        contextPrompt = t.promptPoliceDesk;
+      } else if (this.airportDeskPos && this.playerPos.distanceTo(this.airportDeskPos) < 3.6) {
+        contextPrompt = t.promptTicketCounter;
+      } else if (this.planeBoardPos && this.playerPos.distanceTo(this.planeBoardPos) < 4.0) {
+        contextPrompt = t.promptBoardPlane;
+      } else if (this.mapReturnPos && this.playerPos.distanceTo(this.mapReturnPos) < 3.8) {
+        contextPrompt = t.promptReturnFlight;
+      } else if (this.getOceanDumpCandidate()) {
+        contextPrompt = t.promptOceanDump;
+      } else if (this.currentMap === 'prison' && this.prisonStations) {
+        const ps = this.prisonStations;
+        if (this.playerPos.distanceTo(ps.eatPos) < 3.2) contextPrompt = t.promptPrisonEat;
+        else if (this.playerPos.distanceTo(ps.trainPos) < 3.2) contextPrompt = t.promptPrisonTrain;
+        else if (this.playerPos.distanceTo(ps.restroomPos) < 3.0) contextPrompt = t.promptPrisonRestroom;
+        else if (this.playerPos.distanceTo(ps.sleepPos) < 3.2) contextPrompt = t.promptPrisonSleep;
+        else if (this.playerPos.distanceTo(ps.escapePos) < 3.0) {
+          contextPrompt = `${t.promptPrisonEscape} (${Math.round(this.prisonEscapeProgress)}%)`;
+        }
+      }
+    }
+
+    const hrs = Math.floor(this.inGameMinutes / 60) % 24;
+    const mins = Math.floor(this.inGameMinutes) % 60;
+    const inGameTimeStr = `${String(hrs).padStart(2, '0')}:${String(mins).padStart(2, '0')}`;
+
+    const activeSideMissions: SideMissionItem[] = [];
+    if (this.watchedVideoIds.has('vid_oak') || this.oakDriveRecovered) {
+      activeSideMissions.push({
+        id: 'oak_drive',
+        title: t.missionOakTitle,
+        done: this.oakDriveRecovered,
+      });
+    }
+    if (this.watchedVideoIds.has('vid_wine') || this.hasWine || this.wineDelivered) {
+      activeSideMissions.push({
+        id: 'ravenscroft_wine',
+        title: t.missionWineTitle,
+        done: this.wineDelivered,
+      });
+    }
+    if (this.watchedVideoIds.has('vid_bank') || this.bankDataHacked) {
+      activeSideMissions.push({
+        id: 'bank_hack',
+        title: t.missionBankTitle,
+        done: this.bankDataHacked,
+      });
+    }
+    if (this.watchedVideoIds.has('vid_airport') || this.airportBriefcaseRecovered) {
+      activeSideMissions.push({
+        id: 'airport_briefcase',
+        title: t.missionAirportTitle,
+        done: this.airportBriefcaseRecovered,
+      });
+    }
+    if (this.watchedVideoIds.has('vid_coast') || this.coastPackageRecovered) {
+      activeSideMissions.push({
+        id: 'coast_smuggler',
+        title: t.missionCoastTitle,
+        done: this.coastPackageRecovered,
+      });
+    }
+    if (this.watchedVideoIds.has('vid_sky') || this.skyRelayHacked) {
+      activeSideMissions.push({
+        id: 'sky_relay',
+        title: t.missionSkyTitle,
+        done: this.skyRelayHacked,
+      });
+    }
+
+    const missionsCompleted =
+      (this.oakDriveRecovered ? 1 : 0) +
+      (this.wineDelivered ? 1 : 0) +
+      (this.hotelHeistState === 'completed' ? 1 : 0) +
+      (this.bankDataHacked ? 1 : 0) +
+      (this.airportBriefcaseRecovered ? 1 : 0) +
+      (this.coastPackageRecovered ? 1 : 0) +
+      (this.skyRelayHacked ? 1 : 0);
+
+    const inSupermarket =
+      this.currentMap === 'city' &&
+      (zoneName.includes('SuperMart') || zoneName.includes('Corner Mart'));
+
+    const canSurrender =
+      this.wantedLevel >= 1 &&
+      !this.inHoldingCell &&
+      this.currentMap !== 'prison' &&
+      this.currentMap !== 'plane_incident' &&
+      this.activeCinematic === 'none';
 
     this.onSnapshot({
       phase: this.phase,
@@ -5530,6 +7801,41 @@ export class AssassinEngine {
       weatherVisibilityPct: Math.round(
         WEATHER_CONFIGS[this.weather].sightMult * 100,
       ),
+      inGameTimeStr,
+      currentMap: this.currentMap,
+      hasPlaneTicketTo: this.hasPlaneTicketTo,
+      ticketKioskOpen: this.ticketKioskOpen,
+      policeMenuOpen: this.policeMenuOpen,
+      arrestedFighters: [...this.arrestedFighters],
+      companionCount: this.npcs.filter((n) => n.isCompanion && n.alertState !== 'eliminated').length,
+      inHoldingCell: this.inHoldingCell,
+      holdingCellBail: Math.min(this.cash, this.holdingCellBail),
+      prisonNeeds: { ...this.prisonNeeds },
+      prisonEscapeProgress: Math.round(this.prisonEscapeProgress),
+      planeIntegrity: this.planeIntegrity,
+      elevatorRiding: this.elevatorRiding,
+      canSurrender,
+      cash: this.cash,
+      hasWine: this.hasWine,
+      wineDelivered: this.wineDelivered,
+      drunkTimer: this.drunkTimer,
+      hotelFloor: this.getHotelFloor(),
+      elevatorMenuOpen: this.elevatorMenuOpen,
+      phoneOpen: this.phoneOpen,
+      watchedVideoIds: Array.from(this.watchedVideoIds),
+      revealedHouses: Array.from(this.revealedHouses),
+      robbedHouses: Array.from(this.robbedHouses),
+      peopleHelped: this.peopleHelped,
+      suitRewardClaimed: this.suitRewardClaimed,
+      supermarketOpen: this.supermarketOpen,
+      inSupermarket,
+      armor: this.armor,
+      missionsCompleted,
+      bankDataHacked: this.bankDataHacked,
+      airportBriefcaseRecovered: this.airportBriefcaseRecovered,
+      coastPackageRecovered: this.coastPackageRecovered,
+      skyRelayHacked: this.skyRelayHacked,
+      activeSideMissions,
       health: Math.round(this.health),
       maxHealth: this.maxHealth,
       stamina: Math.round(this.stamina),
@@ -5587,6 +7893,7 @@ export class AssassinEngine {
     this.disposed = true;
     cancelAnimationFrame(this.frameId);
     clearTimeout(this.frameId);
+    this.sound.setSupermarketMusic(false);
 
     window.removeEventListener('resize', this.handleResize);
     window.removeEventListener('keydown', this.handleKeyDown);
@@ -5604,7 +7911,13 @@ export class AssassinEngine {
 
     this.sound.dispose();
     this.textures.dispose();
+    this.decals.forEach((m) => {
+      this.scene.remove(m);
+      m.geometry.dispose();
+      (m.material as THREE.Material).dispose();
+    });
     this.disposables.forEach((d) => d.dispose());
+    this.birdDisposables.forEach((d) => d.dispose());
     this.npcs.forEach((n) => n.rig.disposables.forEach((d) => d.dispose()));
     this.kunaiGeo.dispose();
     this.kunaiMat.dispose();

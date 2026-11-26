@@ -1,40 +1,53 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
   BedDouble,
+  Building2,
   ChevronDown,
   ChevronUp,
+  Clock,
   Cloud,
   CloudFog,
   CloudRain,
   Crosshair,
+  DollarSign,
   Eye,
   FileKey2,
   KeyRound,
   Lock,
   MessageSquare,
+  Music,
   PhoneCall,
+  Plane,
   RotateCcw,
   Send,
+  Shield,
   ShieldAlert,
   Shirt,
+  ShoppingCart,
+  Smartphone,
   Star,
   Sun,
+  Users,
   Volume2,
   VolumeX,
+  Wine,
   X,
 } from 'lucide-react';
 import type {
   CameraPreset,
   DialogueMessage,
   GameSnapshot,
+  HotelFloor,
   HotelRoomId,
   LanguageCode,
   LimbId,
   OutfitId,
+  ShopItemId,
   TalkTargetInfo,
   WeaponId,
 } from '../types/game';
 import { LANGUAGE_OPTIONS, UI_STRINGS } from '../i18n/translations';
+import { PhoneOverlay } from './PhoneOverlay';
 
 interface GameHUDProps {
   snapshot: GameSnapshot;
@@ -68,6 +81,19 @@ interface GameHUDProps {
   onSelectHotelRoom: (roomId: HotelRoomId) => void;
   onCloseHotelMenu: () => void;
   onCycleWeather: () => void;
+  onTogglePhone: () => void;
+  onWatchPhoneVideo: (videoId: string) => void;
+  onDrinkWine: () => void;
+  onUseElevator: (floor: HotelFloor) => void;
+  onCloseElevator: () => void;
+  onCloseTicketKiosk: () => void;
+  onBuyPlaneTicket: (dest: 'coast' | 'sky') => void;
+  onClosePoliceMenu: () => void;
+  onPayFighterBail: (fighterId: string) => void;
+  onPayHoldingCellBail: () => void;
+  onSurrender: () => void;
+  onCloseSupermarket: () => void;
+  onBuySupermarketItem: (itemId: ShopItemId) => void;
 }
 
 const OUTFIT_SWATCHES: Array<{ id: OutfitId; color: string }> = [
@@ -75,6 +101,10 @@ const OUTFIT_SWATCHES: Array<{ id: OutfitId; color: string }> = [
   { id: 'street', color: '#d8d6cf' },
   { id: 'suit', color: '#7f1d1d' },
   { id: 'worker', color: '#eab308' },
+  { id: 'leather', color: '#6b141a' },
+  { id: 'coastal', color: '#0f766e' },
+  { id: 'trench', color: '#a17c52' },
+  { id: 'cyber', color: '#38bdf8' },
 ];
 
 const WEAPON_WHEEL_LAYOUT: Array<{
@@ -83,11 +113,12 @@ const WEAPON_WHEEL_LAYOUT: Array<{
   angleDeg: number;
 }> = [
   { id: 'blades', key: '2', angleDeg: -90 },
-  { id: 'pistol', key: '4', angleDeg: -30 },
-  { id: 'shotgun', key: '5', angleDeg: 30 },
-  { id: 'lockpick', key: '6', angleDeg: 90 },
-  { id: 'kunai', key: '3', angleDeg: 150 },
-  { id: 'unarmed', key: '1', angleDeg: 210 },
+  { id: 'pistol', key: '4', angleDeg: -38.6 },
+  { id: 'shotgun', key: '5', angleDeg: 12.8 },
+  { id: 'lockpick', key: '6', angleDeg: 64.3 },
+  { id: 'phone', key: '7', angleDeg: 115.7 },
+  { id: 'kunai', key: '3', angleDeg: 167.1 },
+  { id: 'unarmed', key: '1', angleDeg: 218.6 },
 ];
 
 function limbColor(snapshot: GameSnapshot, id: LimbId): string {
@@ -338,6 +369,19 @@ export const GameHUD: React.FC<GameHUDProps> = ({
   onSelectHotelRoom,
   onCloseHotelMenu,
   onCycleWeather,
+  onTogglePhone,
+  onWatchPhoneVideo,
+  onDrinkWine,
+  onUseElevator,
+  onCloseElevator,
+  onCloseTicketKiosk,
+  onBuyPlaneTicket,
+  onClosePoliceMenu,
+  onPayFighterBail,
+  onPayHoldingCellBail,
+  onSurrender,
+  onCloseSupermarket,
+  onBuySupermarketItem,
 }) => {
   const [chatInput, setChatInput] = useState('');
   const t = UI_STRINGS[snapshot.language];
@@ -362,6 +406,16 @@ export const GameHUD: React.FC<GameHUDProps> = ({
 
   return (
     <div className="pointer-events-none fixed inset-0 z-10 flex flex-col justify-between">
+      {/* Subtle Drunk Wine Edge Vignette */}
+      {snapshot.phase === 'playing' && snapshot.drunkTimer > 0 && (
+        <div
+          className="pointer-events-none fixed inset-0 z-10"
+          style={{
+            boxShadow: 'inset 0 0 110px rgba(159, 18, 57, 0.42)',
+          }}
+        />
+      )}
+
       {/* Persistent "MADE BY NEURON" Banner throughout Intro & Title Reveal */}
       {(snapshot.phase === 'intro' || snapshot.phase === 'briefing') && (
         <div className="pointer-events-none fixed inset-x-0 top-6 z-50 flex flex-col items-center justify-center px-4 text-center">
@@ -503,6 +557,23 @@ export const GameHUD: React.FC<GameHUDProps> = ({
                 />
               </div>
 
+              {snapshot.armor > 0 && (
+                <div className="flex items-center gap-2 text-[10px] text-sky-300">
+                  <span className="inline-flex items-center gap-1 font-semibold shrink-0">
+                    <Shield className="h-3 w-3" />
+                    {t.armorLabel} {Math.round(snapshot.armor)}%
+                  </span>
+                  <div className="h-1 flex-1 overflow-hidden rounded bg-slate-800">
+                    <div
+                      className="h-full origin-left bg-sky-400 transition-transform duration-150"
+                      style={{
+                        transform: `scaleX(${Math.min(1, Math.max(0, snapshot.armor / 100))})`,
+                      }}
+                    />
+                  </div>
+                </div>
+              )}
+
               <div className="flex items-center gap-2 text-[11px] text-slate-300">
                 <span className="font-mono-num text-amber-300">
                   {snapshot.targetsRemaining}/{snapshot.totalTargets} {t.targets}
@@ -514,10 +585,31 @@ export const GameHUD: React.FC<GameHUDProps> = ({
                     : t.weapons[snapshot.equippedWeapon].label}
                 </span>
               </div>
-              <div className="max-w-[195px] truncate text-[10px] text-slate-400">
-                {snapshot.currentZone} · {t.outfits[snapshot.outfit].label}
+              <div className="max-w-[235px] truncate text-[10px] text-slate-400">
+                <span className="font-semibold text-amber-300">
+                  {t.mapNames[snapshot.currentMap]}
+                </span>{' '}
+                · {snapshot.currentZone}
+                {snapshot.currentZone.includes('Hotel')
+                  ? ` · ${t.hotelFloorLabel} ${snapshot.hotelFloor}F`
+                  : ''}{' '}
+                · {t.outfits[snapshot.outfit].label}
               </div>
               <div className="flex items-center gap-2 text-[10px]">
+                <span className="inline-flex items-center gap-1 font-mono-num text-amber-300">
+                  <Clock className="h-3 w-3" />
+                  {snapshot.inGameTimeStr}
+                </span>
+                <span aria-hidden="true" className="text-slate-600">
+                  ·
+                </span>
+                <span className="inline-flex items-center gap-0.5 font-mono-num font-semibold text-emerald-300">
+                  <DollarSign className="h-3 w-3" />
+                  {snapshot.cash}
+                </span>
+                <span aria-hidden="true" className="text-slate-600">
+                  ·
+                </span>
                 <button
                   type="button"
                   onClick={onCycleWeather}
@@ -542,6 +634,54 @@ export const GameHUD: React.FC<GameHUDProps> = ({
                   {snapshot.weatherVisibilityPct}% {t.weatherVisLabel}
                 </span>
               </div>
+              {snapshot.inSupermarket && (
+                <div className="flex items-center gap-1.5 rounded border border-emerald-400/30 bg-emerald-950/50 px-2 py-0.5 text-[10px] font-semibold text-emerald-300">
+                  <Music className="h-3 w-3 shrink-0" />
+                  <span>{t.supermarketMusicBadge}</span>
+                </div>
+              )}
+              {snapshot.hasWine && (
+                <div className="flex items-center justify-between gap-2 text-[10px] text-rose-300">
+                  <span className="inline-flex items-center gap-1 font-semibold">
+                    <Wine className="h-3 w-3 shrink-0" />
+                    {t.hasWineTag}
+                  </span>
+                  <button
+                    type="button"
+                    onClick={onDrinkWine}
+                    className="rounded border border-rose-400/40 bg-rose-950/60 px-1.5 py-0.5 text-[9px] font-bold uppercase text-rose-200 hover:bg-rose-800/70 transition-colors"
+                  >
+                    {t.drinkWineBtn}
+                  </button>
+                </div>
+              )}
+              {(snapshot.activeSideMissions.length > 0 ||
+                snapshot.robbedHouses.length > 0 ||
+                snapshot.peopleHelped > 0) && (
+                <div className="space-y-0.5 border-t border-white/10 pt-1 text-[10px]">
+                  <div className="flex items-center justify-between text-slate-400">
+                    <span className="font-semibold uppercase tracking-wider text-sky-300">
+                      {t.sideMissionsTitle}
+                    </span>
+                    <span className="font-mono-num">
+                      {t.missionBurglaryLabel}: {snapshot.robbedHouses.length}/3 ·{' '}
+                      {t.missionPoorTitle}: {snapshot.peopleHelped}/3
+                    </span>
+                  </div>
+                  {snapshot.activeSideMissions.map((m) => (
+                    <div
+                      key={m.id}
+                      className={`max-w-[205px] truncate ${
+                        m.done
+                          ? 'text-emerald-400 line-through'
+                          : 'text-amber-200'
+                      }`}
+                    >
+                      {m.title}
+                    </div>
+                  ))}
+                </div>
+              )}
               {snapshot.wantedPostersCount > 0 && (
                 <div className="text-[10px] font-semibold uppercase tracking-wider text-amber-400">
                   {t.postersPostedTag} ({snapshot.wantedPostersCount})
@@ -571,6 +711,72 @@ export const GameHUD: React.FC<GameHUDProps> = ({
                   </span>
                 </div>
               )}
+              {snapshot.elevatorRiding && (
+                <div className="text-[10px] font-semibold text-sky-300">
+                  {t.elevatorRidingTag}
+                </div>
+              )}
+              {snapshot.hasPlaneTicketTo && (
+                <div className="flex items-center gap-1 text-[10px] font-semibold text-sky-300">
+                  <Plane className="h-3 w-3 shrink-0" />
+                  <span>
+                    {t.ticketOwnedTag}:{' '}
+                    {snapshot.hasPlaneTicketTo === 'coast'
+                      ? t.mapNames.coast
+                      : t.mapNames.sky}
+                  </span>
+                </div>
+              )}
+              {snapshot.companionCount > 0 && (
+                <div className="flex items-center gap-1 text-[10px] font-semibold text-emerald-400">
+                  <Users className="h-3 w-3 shrink-0" />
+                  <span>
+                    {t.policeCompanionsActive}: {snapshot.companionCount}
+                  </span>
+                </div>
+              )}
+              {snapshot.canSurrender && (
+                <button
+                  type="button"
+                  onClick={onSurrender}
+                  className="mt-0.5 flex items-center justify-center rounded border border-sky-400/40 bg-sky-950/60 px-2 py-0.5 text-[10px] font-semibold text-sky-200 hover:bg-sky-800/70 transition-colors"
+                >
+                  {t.surrenderHint}
+                </button>
+              )}
+              {snapshot.inHoldingCell && (
+                <div className="mt-1 space-y-1 rounded border border-amber-400/35 bg-amber-950/40 p-1.5 text-[10px]">
+                  <div className="font-semibold text-amber-300">
+                    {t.policeCellTitle}
+                  </div>
+                  <button
+                    type="button"
+                    onClick={onPayHoldingCellBail}
+                    className="w-full rounded bg-amber-500 px-2 py-0.5 text-[10px] font-bold text-slate-950 hover:bg-amber-400 transition-colors"
+                  >
+                    {t.policeCellBailBtn} (${snapshot.holdingCellBail})
+                  </button>
+                </div>
+              )}
+              {snapshot.currentMap === 'prison' && (
+                <div className="mt-1 grid grid-cols-2 gap-x-3 gap-y-0.5 border-t border-white/10 pt-1 text-[10px] font-mono-num">
+                  <span className="text-amber-300">
+                    {t.prisonHunger}: {Math.round(snapshot.prisonNeeds.hunger)}%
+                  </span>
+                  <span className="text-sky-300">
+                    {t.prisonEnergy}: {Math.round(snapshot.prisonNeeds.energy)}%
+                  </span>
+                  <span className="text-cyan-300">
+                    {t.prisonHygiene}: {Math.round(snapshot.prisonNeeds.hygiene)}%
+                  </span>
+                  <span className="text-emerald-300">
+                    {t.prisonStrength}: {Math.round(snapshot.prisonNeeds.strength)}
+                  </span>
+                  <span className="col-span-2 text-rose-300">
+                    {t.prisonEscape}: {snapshot.prisonEscapeProgress}%
+                  </span>
+                </div>
+              )}
             </div>
 
             {/* Minimal Proximity Radar */}
@@ -596,9 +802,14 @@ export const GameHUD: React.FC<GameHUDProps> = ({
                           ? 'bg-red-500'
                           : b.alertState === 'staring'
                             ? 'bg-orange-400'
-                            : b.role === 'civilian' || b.role === 'clerk'
-                              ? 'bg-emerald-400'
-                              : 'bg-sky-400';
+                            : b.role === 'gentleman'
+                              ? 'bg-indigo-400'
+                              : b.role === 'civilian' ||
+                                  b.role === 'clerk' ||
+                                  b.role === 'collector' ||
+                                  b.role === 'poor'
+                                ? 'bg-emerald-400'
+                                : 'bg-sky-400';
                 return (
                   <span
                     key={b.id}
@@ -638,6 +849,11 @@ export const GameHUD: React.FC<GameHUDProps> = ({
               !snapshot.appearanceMenuOpen &&
               !snapshot.lockpickMinigameOpen &&
               !snapshot.hotelRoomMenuOpen &&
+              !snapshot.elevatorMenuOpen &&
+              !snapshot.ticketKioskOpen &&
+              !snapshot.policeMenuOpen &&
+              !snapshot.phoneOpen &&
+              !snapshot.supermarketOpen &&
               !chatTarget && (
                 <button
                   type="button"
@@ -651,6 +867,23 @@ export const GameHUD: React.FC<GameHUDProps> = ({
           </div>
         </div>
       )}
+
+      {/* Top-Center Flight 409 Fuselage Integrity Warning */}
+      {snapshot.phase === 'playing' &&
+        snapshot.activeCinematic === 'none' &&
+        snapshot.currentMap === 'plane_incident' && (
+          <div className="pointer-events-none fixed inset-x-0 top-20 z-20 flex justify-center px-4">
+            <div className="w-full max-w-md rounded-xl border border-rose-500/60 bg-[#1a070b]/92 px-4 py-2 text-center shadow-xl">
+              <div className="flex items-center justify-between text-xs font-bold text-rose-300">
+                <span>{t.planeIntegrityLabel}</span>
+                <span className="font-mono-num">{snapshot.planeIntegrity}%</span>
+              </div>
+              <div className="mt-1 text-[11px] text-slate-200">
+                {t.planeMarshalsHint}
+              </div>
+            </div>
+          </div>
+        )}
 
       {/* Top-Center Staring Recognition & 911 Police Call Meter */}
       {snapshot.phase === 'playing' &&
@@ -717,6 +950,11 @@ export const GameHUD: React.FC<GameHUDProps> = ({
         !snapshot.appearanceMenuOpen &&
         !snapshot.lockpickMinigameOpen &&
         !snapshot.hotelRoomMenuOpen &&
+        !snapshot.elevatorMenuOpen &&
+        !snapshot.ticketKioskOpen &&
+        !snapshot.policeMenuOpen &&
+        !snapshot.phoneOpen &&
+        !snapshot.supermarketOpen &&
         !chatTarget && (
           <div className="pointer-events-none fixed inset-0 flex flex-col items-center justify-center">
             {!snapshot.inVehicle && (
@@ -744,7 +982,7 @@ export const GameHUD: React.FC<GameHUDProps> = ({
       {/* 'G' Slow-Motion Radial Weapon Wheel */}
       {snapshot.phase === 'playing' && snapshot.weaponWheelOpen && (
         <div className="pointer-events-auto fixed inset-0 z-30 flex items-center justify-center bg-[#05080f]/55">
-          <div className="relative h-84 w-84 rounded-full border border-amber-400/35 bg-[#090d16]/92 shadow-2xl">
+          <div className="relative h-[352px] w-[352px] rounded-full border border-amber-400/35 bg-[#090d16]/92 shadow-2xl">
             <div className="absolute inset-0 flex flex-col items-center justify-center text-center">
               <div className="text-[10px] font-semibold uppercase tracking-widest text-amber-400">
                 {t.slowMotion}
@@ -763,9 +1001,9 @@ export const GameHUD: React.FC<GameHUDProps> = ({
 
             {WEAPON_WHEEL_LAYOUT.map((w) => {
               const rad = (w.angleDeg * Math.PI) / 180;
-              const r = 118;
-              const x = 168 + Math.cos(rad) * r;
-              const y = 168 + Math.sin(rad) * r;
+              const r = 128;
+              const x = 176 + Math.cos(rad) * r;
+              const y = 176 + Math.sin(rad) * r;
               const active = snapshot.equippedWeapon === w.id;
               const info = t.weapons[w.id];
               return (
@@ -880,6 +1118,257 @@ export const GameHUD: React.FC<GameHUDProps> = ({
         </div>
       )}
 
+      {/* Hotel Vex Glass Elevator Modal (1F .. 6F) */}
+      {snapshot.phase === 'playing' && snapshot.elevatorMenuOpen && (
+        <div className="pointer-events-auto fixed inset-0 z-40 flex items-center justify-center bg-[#05080f]/68 p-4">
+          <div className="w-full max-w-sm rounded-2xl border border-sky-400/35 bg-[#090d16]/96 p-5 shadow-2xl">
+            <div className="flex items-start justify-between gap-3 border-b border-white/10 pb-3">
+              <div>
+                <div className="flex items-center gap-2 text-xs font-semibold text-sky-400">
+                  <Building2 className="h-4 w-4" />
+                  {t.elevatorTitle}
+                </div>
+                <p className="mt-1 text-xs leading-snug text-slate-300">
+                  {t.elevatorSubtitle}
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={onCloseElevator}
+                className="rounded p-1 text-slate-400 hover:bg-white/10 hover:text-white"
+                aria-label="Close elevator menu"
+              >
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+
+            <div className="mt-3.5 max-h-[340px] space-y-2 overflow-y-auto pr-1">
+              {([6, 5, 4, 3, 2, 1] as HotelFloor[]).map((floorNum) => {
+                const info = t.elevatorFloors[floorNum];
+                const active = snapshot.hotelFloor === floorNum;
+                return (
+                  <button
+                    key={floorNum}
+                    type="button"
+                    onClick={() => onUseElevator(floorNum)}
+                    className={`flex w-full items-center justify-between gap-3 rounded-xl border px-3.5 py-2 text-left transition-colors ${
+                      active
+                        ? 'border-sky-400 bg-sky-500/15 text-white'
+                        : 'border-white/12 bg-slate-900/85 text-slate-100 hover:border-sky-400/60'
+                    }`}
+                  >
+                    <div className="min-w-0">
+                      <div className="text-xs font-bold">{info.name}</div>
+                      <div className="text-[11px] text-slate-400">{info.desc}</div>
+                    </div>
+                    <span className="rounded border border-sky-400/35 bg-sky-500/15 px-2 py-0.5 font-mono-num text-[11px] font-bold text-sky-300 shrink-0">
+                      {floorNum}F
+                    </span>
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Obsidian Airport Ticket Kiosk Modal */}
+      {snapshot.phase === 'playing' && snapshot.ticketKioskOpen && (
+        <div className="pointer-events-auto fixed inset-0 z-40 flex items-center justify-center bg-[#05080f]/68 p-4">
+          <div className="w-full max-w-md rounded-2xl border border-amber-400/35 bg-[#090d16]/96 p-5 shadow-2xl">
+            <div className="flex items-start justify-between gap-3 border-b border-white/10 pb-3">
+              <div>
+                <div className="flex items-center gap-2 text-xs font-semibold text-amber-400">
+                  <Plane className="h-4 w-4" />
+                  {t.ticketKioskTitle}
+                </div>
+                <p className="mt-1 text-xs leading-snug text-slate-300">
+                  {t.ticketKioskSubtitle}
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={onCloseTicketKiosk}
+                className="rounded p-1 text-slate-400 hover:bg-white/10 hover:text-white"
+                aria-label="Close ticket kiosk"
+              >
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+
+            <div className="mt-4 space-y-2.5">
+              <button
+                type="button"
+                disabled={snapshot.cash < 250}
+                onClick={() => onBuyPlaneTicket('coast')}
+                className="flex w-full items-center justify-between gap-3 rounded-xl border border-white/12 bg-slate-900/90 px-4 py-3 text-left text-slate-100 hover:border-sky-400/60 disabled:opacity-45"
+              >
+                <div>
+                  <div className="text-xs font-bold">{t.mapNames.coast}</div>
+                  <div className="text-[11px] text-slate-400">{t.ticketBuyCoast}</div>
+                </div>
+                <span className="font-mono-num text-xs font-bold text-emerald-300">
+                  $250
+                </span>
+              </button>
+              <button
+                type="button"
+                disabled={snapshot.cash < 400}
+                onClick={() => onBuyPlaneTicket('sky')}
+                className="flex w-full items-center justify-between gap-3 rounded-xl border border-white/12 bg-slate-900/90 px-4 py-3 text-left text-slate-100 hover:border-amber-400/60 disabled:opacity-45"
+              >
+                <div>
+                  <div className="text-xs font-bold">{t.mapNames.sky}</div>
+                  <div className="text-[11px] text-slate-400">{t.ticketBuySky}</div>
+                </div>
+                <span className="font-mono-num text-xs font-bold text-emerald-300">
+                  $400
+                </span>
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Police Precinct Booking Desk & Bail Companion Modal */}
+      {snapshot.phase === 'playing' && snapshot.policeMenuOpen && (
+        <div className="pointer-events-auto fixed inset-0 z-40 flex items-center justify-center bg-[#05080f]/68 p-4">
+          <div className="w-full max-w-md rounded-2xl border border-sky-400/35 bg-[#090d16]/96 p-5 shadow-2xl">
+            <div className="flex items-start justify-between gap-3 border-b border-white/10 pb-3">
+              <div>
+                <div className="flex items-center gap-2 text-xs font-semibold text-sky-400">
+                  <ShieldAlert className="h-4 w-4" />
+                  {t.policeTitle}
+                </div>
+                <p className="mt-1 text-xs leading-snug text-slate-300">
+                  {t.policeSubtitle}
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={onClosePoliceMenu}
+                className="rounded p-1 text-slate-400 hover:bg-white/10 hover:text-white"
+                aria-label="Close police desk"
+              >
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+
+            <div className="mt-4 max-h-64 space-y-2 overflow-y-auto">
+              {snapshot.arrestedFighters.length === 0 ? (
+                <div className="rounded-xl border border-white/10 bg-slate-900/70 p-4 text-center text-xs text-slate-400">
+                  {t.policeEmptyFighters}
+                </div>
+              ) : (
+                snapshot.arrestedFighters.map((fighter) => (
+                  <div
+                    key={fighter.id}
+                    className="flex items-center justify-between gap-3 rounded-xl border border-white/12 bg-slate-900/85 px-3.5 py-2.5"
+                  >
+                    <div className="min-w-0">
+                      <div className="truncate text-xs font-bold text-slate-100">
+                        {fighter.name}
+                      </div>
+                      <div className="font-mono-num text-[11px] text-emerald-300">
+                        ${fighter.bailCost}
+                      </div>
+                    </div>
+                    <button
+                      type="button"
+                      disabled={snapshot.cash < fighter.bailCost}
+                      onClick={() => onPayFighterBail(fighter.id)}
+                      className="rounded-lg bg-sky-500 px-3 py-1.5 text-xs font-bold text-slate-950 hover:bg-sky-400 disabled:opacity-45 shrink-0"
+                    >
+                      {t.policePayBailBtn}
+                    </button>
+                  </div>
+                ))
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* 24H SuperMart Checkout & Supplies Modal */}
+      {snapshot.phase === 'playing' && snapshot.supermarketOpen && (
+        <div className="pointer-events-auto fixed inset-0 z-40 flex items-center justify-center bg-[#05080f]/68 p-4">
+          <div className="w-full max-w-md rounded-2xl border border-emerald-400/35 bg-[#090d16]/96 p-5 shadow-2xl">
+            <div className="flex items-start justify-between gap-3 border-b border-white/10 pb-3">
+              <div>
+                <div className="flex items-center gap-2 text-xs font-semibold text-emerald-400">
+                  <ShoppingCart className="h-4 w-4" />
+                  {t.supermarketTitle}
+                </div>
+                <p className="mt-1 text-xs leading-snug text-slate-300">
+                  {t.supermarketSubtitle}
+                </p>
+              </div>
+              <div className="flex items-center gap-2 shrink-0">
+                <span className="rounded border border-emerald-400/30 bg-emerald-950/50 px-2 py-0.5 font-mono-num text-xs font-bold text-emerald-300">
+                  ${snapshot.cash}
+                </span>
+                <button
+                  type="button"
+                  onClick={onCloseSupermarket}
+                  className="rounded p-1 text-slate-400 hover:bg-white/10 hover:text-white"
+                  aria-label="Close supermarket checkout"
+                >
+                  <X className="h-4 w-4" />
+                </button>
+              </div>
+            </div>
+
+            <div className="mt-4 max-h-80 space-y-2 overflow-y-auto pr-1">
+              {(
+                [
+                  'energy_drink',
+                  'bento_meal',
+                  'medkit',
+                  'kevlar_vest',
+                  'ammo_lockpick',
+                ] as ShopItemId[]
+              ).map((itemId) => {
+                const item = t.supermarketItems[itemId];
+                const canAfford = snapshot.cash >= item.price;
+                return (
+                  <div
+                    key={itemId}
+                    className="flex items-center justify-between gap-3 rounded-xl border border-white/12 bg-slate-900/90 px-3.5 py-2.5"
+                  >
+                    <div className="min-w-0">
+                      <div className="text-xs font-bold text-slate-100">
+                        {item.name}
+                      </div>
+                      <div className="text-[11px] text-slate-400">
+                        {item.desc}
+                      </div>
+                    </div>
+                    <button
+                      type="button"
+                      disabled={!canAfford}
+                      onClick={() => onBuySupermarketItem(itemId)}
+                      className="rounded-lg bg-emerald-500 px-3 py-1.5 font-mono-num text-xs font-bold text-slate-950 hover:bg-emerald-400 disabled:opacity-40 transition-colors shrink-0"
+                    >
+                      ${item.price}
+                    </button>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Mobile Phone Overlay (Clock, Weather, Watchable Videos, Wine Action) */}
+      {snapshot.phase === 'playing' && snapshot.phoneOpen && (
+        <PhoneOverlay
+          snapshot={snapshot}
+          onClose={onTogglePhone}
+          onWatchVideo={onWatchPhoneVideo}
+          onDrinkWine={onDrinkWine}
+        />
+      )}
+
       {/* Atelier Vex Side Appearance & Disguise Drawer (keeps center 3D character visible!) */}
       {snapshot.phase === 'playing' && snapshot.appearanceMenuOpen && (
         <div className="pointer-events-auto fixed right-5 top-1/2 z-30 w-80 -translate-y-1/2 rounded-2xl border border-amber-400/35 bg-[#090d16]/95 p-5 shadow-2xl">
@@ -903,7 +1392,7 @@ export const GameHUD: React.FC<GameHUDProps> = ({
             </button>
           </div>
 
-          <div className="mt-3 space-y-2">
+          <div className="mt-3 max-h-[340px] space-y-2 overflow-y-auto pr-1">
             {OUTFIT_SWATCHES.map(({ id, color }) => {
               const active = snapshot.outfit === id;
               const info = t.outfits[id];
@@ -1131,6 +1620,14 @@ export const GameHUD: React.FC<GameHUDProps> = ({
               </div>
 
               <div className="flex items-center gap-1.5">
+                <button
+                  type="button"
+                  onClick={onTogglePhone}
+                  className="flex items-center gap-1.5 rounded-lg border border-sky-400/30 bg-slate-900 px-2.5 py-1 text-xs font-medium text-sky-300 hover:border-sky-400 hover:text-white whitespace-nowrap shrink-0"
+                >
+                  <Smartphone className="h-3.5 w-3.5" />
+                  {t.phoneOpenBtn}
+                </button>
                 <button
                   type="button"
                   onClick={onCycleWeather}
